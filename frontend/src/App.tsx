@@ -27,6 +27,13 @@ type SpeechTiming = {
   resultAtMs: number;
 };
 
+type DemoPhase = "idle" | "input" | "detect" | "mask" | "context" | "policy";
+
+type EscalationState = {
+  abuse: number;
+  sexual: number;
+};
+
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
@@ -37,6 +44,7 @@ const CFG = {
   beepMaxMs: 1100,
   beepFrequency: 880,
   beepVolume: 0.18,
+  stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
   warningMessages: [
@@ -75,6 +83,14 @@ const actionLabel: Record<PolicyAction, string> = {
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> = [
+  { id: "input", label: "음성 입력", detail: "20ms Frame" },
+  { id: "detect", label: "빠른 감지", detail: "RMS/STT/로컬 사전" },
+  { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
+  { id: "context", label: "3초 맥락", detail: "Claude 판단" },
+  { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
+];
+
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
 }
@@ -110,6 +126,10 @@ function beepDurationFor(result: AnalyzeResponse) {
 
 function initialCounts() {
   return { normal: 0, abuse: 0, sexual: 0, raised: 0, "abuse-raised": 0 } as Record<EventType, number>;
+}
+
+function initialEscalation(): EscalationState {
+  return { abuse: 0, sexual: 0 };
 }
 
 function initialPreview(mode: AnalysisMode): ProtectionPreview {
@@ -166,6 +186,8 @@ export default function App() {
   const [status, setStatus] = useState("대기 중");
   const [contextStatus, setContextStatus] = useState("3초 문맥 스냅샷 대기");
   const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
+  const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
+  const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [immediatePreview, setImmediatePreview] = useState<ProtectionPreview>(() => initialPreview("immediate"));
   const [contextPreview, setContextPreview] = useState<ProtectionPreview>(() => initialPreview("context_snapshot"));
   const [error, setError] = useState("");
@@ -173,6 +195,7 @@ export default function App() {
   const countersRef = useRef(initialCounts());
   const contextBufferRef = useRef<string[]>([]);
   const seenEventRef = useRef(new Set<string>());
+  const seenStageRef = useRef(new Set<string>());
   const announcingRef = useRef(false);
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
@@ -200,8 +223,9 @@ export default function App() {
     }, initialCounts());
   }, [logs]);
 
-  const abuseStage = Math.min(4, counts.abuse + counts.raised + counts["abuse-raised"]);
-  const sexualStage = Math.min(2, counts.sexual);
+  const abuseStage = escalation.abuse;
+  const sexualStage = escalation.sexual;
+  const activePhaseIndex = demoProcessSteps.findIndex((step) => step.id === demoPhase);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
@@ -323,6 +347,7 @@ export default function App() {
   }
 
   function beepProfanitySegment(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
+    setDemoPhase("mask");
     const { ctx, outGain } = audioRef.current;
     const durationMs = beepDurationFor(result);
     if (!ctx || !outGain) {
@@ -371,6 +396,31 @@ export default function App() {
     return true;
   }
 
+  function resetEscalation() {
+    setEscalation(initialEscalation());
+    seenStageRef.current.clear();
+  }
+
+  function setEscalationStage(kind: keyof EscalationState, stage: number) {
+    setEscalation((prev) => ({
+      ...prev,
+      [kind]: kind === "abuse" ? clamp(stage, 0, 4) : clamp(stage, 0, 2),
+    }));
+  }
+
+  function advanceEscalation(result: AnalyzeResponse, text: string) {
+    if (!result.policyActions.includes("escalate") || result.eventType === "normal") return;
+
+    const kind: keyof EscalationState = result.eventType === "sexual" ? "sexual" : "abuse";
+    const maxStage = kind === "abuse" ? 4 : 2;
+    const timeBucket = Math.floor(Date.now() / CFG.stageDedupeMs);
+    const fingerprint = `${kind}:${result.maskedText || text}:${timeBucket}`;
+    if (seenStageRef.current.has(fingerprint)) return;
+    seenStageRef.current.add(fingerprint);
+
+    setEscalation((prev) => ({ ...prev, [kind]: Math.min(maxStage, prev[kind] + 1) }));
+  }
+
   function updatePreview(result: AnalyzeResponse, text: string) {
     const preview = previewFromResult(result, text);
     if (result.detectionPath === "immediate") setImmediatePreview(preview);
@@ -379,6 +429,7 @@ export default function App() {
 
   function applyPolicy(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
     updatePreview(result, text);
+    advanceEscalation(result, text);
 
     const shouldLog =
       result.eventType !== "normal" ||
@@ -428,6 +479,7 @@ export default function App() {
     if (!clean || announcingRef.current) return;
     if (clean === interimCheckRef.current.lastText) return;
 
+    setDemoPhase("detect");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview((prev) => ({
       ...prev,
@@ -450,21 +502,63 @@ export default function App() {
     return result;
   }
 
-  async function runDemo(type: "abuse" | "sexual" | "raised") {
+  async function runDemo(type: "abuse" | "sexual" | "raised" | "escalation") {
     if (active) stopSession();
     setError("");
     setLogs([]);
     countersRef.current = initialCounts();
     seenEventRef.current.clear();
     contextBufferRef.current = [];
+    resetEscalation();
     setElapsed(0);
     setActive(false);
     setMuted(false);
+    setDemoPhase("idle");
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+
+    if (type === "escalation") {
+      const lines = [
+        "시발 뭐하는 거야",
+        "개새끼 당장 바꿔",
+        "병신같이 처리하네",
+        "좆같네 꺼져",
+      ];
+
+      try {
+        setDemoStep("폭언/고성 4단계 상승 데모: 반복 위험 이벤트 입력");
+        setContextPreview(initialPreview("context_snapshot"));
+        for (let index = 0; index < lines.length; index += 1) {
+          const stage = index + 1;
+          const text = lines[index];
+          setDemoPhase("input");
+          setInterimText(text);
+          setLevel(42 + stage * 9);
+          setDemoStep(`${stage}단계 진입: 고객 발화 입력`);
+          setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
+          await sleep(420);
+
+          setDemoPhase("detect");
+          setDemoStep(`${stage}단계 진입: 로컬 욕설 사전 감지`);
+          await analyzeDemo(text, stage >= 3, "immediate");
+          setEscalationStage("abuse", stage);
+          await sleep(620);
+
+          setDemoPhase("mask");
+          setDemoStep(`${stage}단계 진입: 욕설 단어 구간 비프음 마스크 적용`);
+          await sleep(520);
+        }
+
+        setDemoPhase("policy");
+        setDemoStep("Policy Engine: 폭언/고성 4단계 점등 완료, 상담 종료 안내 단계");
+      } catch {
+        setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
+      }
+      return;
+    }
 
     const script = {
       abuse: {
@@ -488,6 +582,7 @@ export default function App() {
     }[type];
 
     try {
+      setDemoPhase("input");
       setDemoStep(`${script.title}: 고객 음성 입력`);
       setInterimText(script.text);
       setLevel(script.level);
@@ -506,20 +601,38 @@ export default function App() {
       });
       await sleep(650);
 
+      setDemoPhase("detect");
       setDemoStep("즉시 감지 경로: RMS/STT 인터림/로컬 사전 확인");
       setStatus(script.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
       await analyzeDemo(script.text, script.raised, "immediate");
+      setEscalationStage(type === "sexual" ? "sexual" : "abuse", 1);
       await sleep(900);
 
-      setDemoStep("출력 커서: 욕설 단어 구간에만 비프음 마스크 적용");
-      setStatus(script.raised ? "고성 구간 피치/볼륨 완화" : "욕설 단어 삐 처리");
+      setDemoPhase("mask");
+      setDemoStep(
+        type === "abuse"
+          ? "출력 커서: 욕설 단어 구간에만 비프음 마스크 적용"
+          : type === "raised"
+            ? "출력 커서: 고성 구간 피치/볼륨 완화 마스크 적용"
+            : "정책 엔진: 성희롱 경고 TTS와 증빙 로그 액션 준비",
+      );
+      setStatus(
+        type === "raised"
+          ? "고성 구간 피치/볼륨 완화"
+          : type === "sexual"
+            ? "성희롱 경고 TTS 및 증빙 로그"
+            : "욕설 단어 삐 처리",
+      );
       await sleep(900);
 
+      setDemoPhase("context");
       setDemoStep("3초 문맥 판단 경로: Claude 스냅샷 분석 결과를 정책 엔진에 반영");
       setContextStatus("3초 문맥 스냅샷 분석 중");
       await analyzeDemo(script.text, false, "context_snapshot");
+      if (type === "sexual") setEscalationStage("sexual", 2);
       await sleep(600);
 
+      setDemoPhase("policy");
       setDemoStep("Policy Engine: 단계 상승, 경고, 로그, 보고서 액션 결정 완료");
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
@@ -539,6 +652,7 @@ export default function App() {
       return;
     }
     setContextStatus("3초 문맥 스냅샷 분석 중");
+    setDemoPhase("context");
     setContextPreview((prev) => ({
       ...prev,
       status: "3초 문맥 스냅샷 분석 중: Claude 판단 대기",
@@ -567,6 +681,7 @@ export default function App() {
       const resultAtMs = performance.now();
       if (!speechStartAtRef.current) speechStartAtRef.current = resultAtMs - 650;
       const timing = { startedAtMs: speechStartAtRef.current, resultAtMs };
+      setDemoPhase("input");
       let interim = "";
       let final = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -608,8 +723,10 @@ export default function App() {
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
     seenEventRef.current.clear();
+    resetEscalation();
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
+    setDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
@@ -650,6 +767,8 @@ export default function App() {
     setStatus("대기 중");
     setContextStatus("3초 문맥 스냅샷 대기");
     setInterimText("상담이 종료되었습니다.");
+    resetEscalation();
+    setDemoPhase("idle");
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
   }
@@ -675,20 +794,40 @@ export default function App() {
         <span>보호된 상담사 청취 출력</span>
       </section>
 
+      <section className="process-strip">
+        {demoProcessSteps.map((step, index) => (
+          <div
+            key={step.id}
+            className={[
+              "process-step",
+              demoPhase === step.id ? "active" : "",
+              activePhaseIndex >= 0 && index < activePhaseIndex ? "done" : "",
+            ].join(" ")}
+          >
+            <strong>{step.label}</strong>
+            <span>{step.detail}</span>
+          </div>
+        ))}
+      </section>
+
       <section className="stage-grid">
         <div>
-          <strong>폭언/고성 4단계</strong>
+          <strong>폭언/고성 4단계 <em>{abuseStage ? `${abuseStage}단계 진입` : "대기"}</em></strong>
           <div className="stage">
             {[1, 2, 3, 4].map((item) => (
-              <span key={item} className={abuseStage >= item ? "on" : ""}>{item}단계</span>
+              <span key={item} className={`${abuseStage >= item ? "on" : ""} ${abuseStage === item ? "current" : ""}`}>
+                {item}단계
+              </span>
             ))}
           </div>
         </div>
         <div>
-          <strong>성희롱 2단계</strong>
+          <strong>성희롱 2단계 <em>{sexualStage ? `${sexualStage}단계 진입` : "대기"}</em></strong>
           <div className="stage two">
             {[1, 2].map((item) => (
-              <span key={item} className={sexualStage >= item ? "on sexual" : ""}>{item}단계</span>
+              <span key={item} className={`${sexualStage >= item ? "on sexual" : ""} ${sexualStage === item ? "current" : ""}`}>
+                {item}단계
+              </span>
             ))}
           </div>
         </div>
@@ -758,6 +897,7 @@ export default function App() {
               <button onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
               <button onClick={() => void runDemo("raised")}>고성 완화</button>
               <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
+              <button onClick={() => void runDemo("escalation")}>4단계 상승</button>
             </div>
           </div>
         </div>
