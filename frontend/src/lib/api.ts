@@ -68,9 +68,10 @@ export async function analyzeUtterance(
   return response.json() as Promise<AnalyzeResponse>;
 }
 
-export async function transcribeAudioBlob(file: Blob, filename = "demo-audio.mp3"): Promise<TranscribeResponse> {
+export async function transcribeAudioBlob(file: Blob, filename = "demo-audio.mp3", prompt = ""): Promise<TranscribeResponse> {
   const formData = new FormData();
   formData.append("file", file, filename);
+  if (prompt.trim()) formData.append("prompt", prompt.trim());
 
   const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
     method: "POST",

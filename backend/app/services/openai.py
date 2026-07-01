@@ -62,20 +62,29 @@ async def classify_with_openai(text: str, audio_features: AudioFeatures | None =
         return conservative_fail(text)
 
 
-async def transcribe_audio_with_openai(filename: str, content: bytes, content_type: str | None = None) -> TranscribeResponse:
+async def transcribe_audio_with_openai(
+    filename: str,
+    content: bytes,
+    content_type: str | None = None,
+    prompt: str = "",
+) -> TranscribeResponse:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    transcription_data = {
+        "model": settings.openai_transcription_model,
+        "language": "ko",
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "word",
+    }
+    if prompt.strip():
+        transcription_data["prompt"] = prompt.strip()[-900:]
 
     async with httpx.AsyncClient(timeout=45.0) as client:
         response = await client.post(
             "https://api.openai.com/v1/audio/transcriptions",
             headers={"authorization": f"Bearer {settings.openai_api_key}"},
-            data={
-                "model": settings.openai_transcription_model,
-                "language": "ko",
-                "response_format": "verbose_json",
-                "timestamp_granularities[]": "word",
-            },
+            data=transcription_data,
             files={
                 "file": (
                     filename,

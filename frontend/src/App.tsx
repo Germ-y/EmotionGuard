@@ -695,6 +695,8 @@ export default function App() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const audioFeaturesRef = useRef<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
   const featureUiTsRef = useRef(0);
+  const browserDictationRef = useRef(false);
+  const lastBrowserDictationRef = useRef<{ text: string; at: number } | null>(null);
   const demoAudioRef = useRef<{
     ctx?: AudioContext;
     sources: AudioBufferSourceNode[];
@@ -793,6 +795,22 @@ export default function App() {
 
   function currentSessionTimestamp() {
     return formatDuration(currentSessionSeconds());
+  }
+
+  function dictationPrompt() {
+    const context = contextBufferRef.current
+      .slice(-5)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!context) return "";
+    return `이전 상담 문맥: ${context}. 이어지는 발화를 한국어로 그대로 받아쓰기. 문맥에 없는 내용을 새로 만들지 말 것.`;
+  }
+
+  function recentBrowserDictation(maxAgeMs = 3000) {
+    const recent = lastBrowserDictationRef.current;
+    if (!recent || Date.now() - recent.at > maxAgeMs) return "";
+    return recent.text;
   }
 
   function markDemoPhase(phase: DemoPhase) {
@@ -1394,13 +1412,15 @@ export default function App() {
     liveChunkRef.current.inFlight += 1;
 
     try {
-      const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`);
+      const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`, dictationPrompt());
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const clean = (transcription.text || "").trim();
       if (!clean) return;
-      setLiveTranscript(clean);
+      const displayText = recentBrowserDictation() || clean;
+      const openAiVisibleDictation = !browserDictationRef.current;
+      if (openAiVisibleDictation) setLiveTranscript(clean);
       if (isLikelyLiveSttHallucination(clean)) {
-        setLiveTranscript("");
+        if (openAiVisibleDictation) setLiveTranscript("");
         setStatus("OpenAI 청크 STT 대기 중");
         return;
       }
@@ -1424,14 +1444,18 @@ export default function App() {
       if (repeatedNormal) return;
       pushContext(clean);
       if (result.eventType === "normal") {
-        applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
-        setInterimText(clean);
-        setLiveTranscript("");
-        setStatus("받아쓰기 기록");
+        if (openAiVisibleDictation) {
+          applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
+          setInterimText(clean);
+          setLiveTranscript("");
+          setStatus("받아쓰기 기록");
+        } else {
+          setStatus("OpenAI 보호 분석 완료");
+        }
         return;
       }
-      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked });
-      setLiveTranscript("");
+      applyPolicy(result, displayText, timing, { suppressImmediateMask: exactMasked });
+      if (openAiVisibleDictation) setLiveTranscript("");
       if (exactMasked) {
         setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
         setDemoStep("OpenAI 청크 STT가 단어 시작/끝 시간을 받아 출력 버퍼에 마스크를 적용했습니다.");
@@ -1801,9 +1825,11 @@ export default function App() {
   function startRecognition() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
+      browserDictationRef.current = false;
       setError("이 브라우저는 Web Speech API를 지원하지 않습니다. Chrome 또는 Edge를 권장합니다.");
       return;
     }
+    browserDictationRef.current = true;
 
     const recognition = new Recognition();
     let recognitionRunning = false;
@@ -1847,10 +1873,12 @@ export default function App() {
       if (interim) {
         setInterimText(interim);
         setLiveTranscript(interim);
+        lastBrowserDictationRef.current = { text: interim, at: Date.now() };
         pushContext(interim);
         queueInterimImmediate(interim, timing);
       }
       if (final) {
+        lastBrowserDictationRef.current = { text: final, at: Date.now() };
         pushContext(final);
         void processText(final, "immediate", timing, { logNormal: true, runId: sessionRunIdRef.current });
         setLiveTranscript("");
@@ -1896,6 +1924,7 @@ export default function App() {
     setLatestDetection(null);
     setDemoDialogue([]);
     setLiveTranscript("");
+    lastBrowserDictationRef.current = null;
     setDemoStep("데모 버튼을 누르면 현재 상담 세션에 보호 이벤트가 기록됩니다.");
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
@@ -1960,6 +1989,7 @@ export default function App() {
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
     liveChunkRef.current = { enabled: false, inFlight: 0 };
     lastNormalTranscriptRef.current = null;
+    lastBrowserDictationRef.current = null;
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     announcingRef.current = false;
