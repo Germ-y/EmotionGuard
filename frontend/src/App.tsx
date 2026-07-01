@@ -796,7 +796,13 @@ export default function App() {
     recognition.onend = () => {
       if (audioRef.current.recognition) recognition.start();
     };
-    recognition.onerror = (event) => setError(`음성 인식 오류: ${event.error}`);
+    recognition.onerror = (event) => {
+      if (event.error === "no-speech") {
+        setStatus("음성 입력 대기 중");
+        return;
+      }
+      setError(`음성 인식 오류: ${event.error}`);
+    };
     recognition.start();
     audioRef.current.recognition = recognition;
   }
