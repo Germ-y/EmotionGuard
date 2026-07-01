@@ -6,6 +6,7 @@ type LogEntry = AnalyzeResponse & {
   id: string;
   text: string;
   time: string;
+  timestamp: string;
 };
 
 type PreviewSource = AnalyzeResponse["source"] | "browser" | "pending";
@@ -119,6 +120,12 @@ function formatDuration(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
+function formatSessionTimestamp(startedAt: Date | null, fallbackSeconds: number) {
+  if (!startedAt) return formatDuration(fallbackSeconds);
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000));
+  return formatDuration(seconds);
+}
+
 function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | "female") {
   if (level < threshold) return 0;
   const over = (level - threshold) / (100 - threshold);
@@ -201,7 +208,7 @@ function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPr
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
-        .map((item, index) => `${index + 1}. [${item.time}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.maskedText}`)
+        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.maskedText}`)
         .join("\n")
     : "감지된 특이 민원 발화 없음";
 
@@ -462,13 +469,19 @@ export default function App() {
 
   function appendLog(result: AnalyzeResponse, text: string) {
     const fingerprint = `${result.eventType}:${result.maskedText}:${Math.floor(Date.now() / 1200)}`;
-    const entry: LogEntry = { ...result, id: crypto.randomUUID(), text, time: now() };
-    reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
-
     if (seenEventRef.current.has(fingerprint)) return false;
     seenEventRef.current.add(fingerprint);
 
+    const entry: LogEntry = {
+      ...result,
+      id: crypto.randomUUID(),
+      text,
+      time: now(),
+      timestamp: formatSessionTimestamp(sessionStartedAtRef.current, elapsed),
+    };
+
     countersRef.current[result.eventType] += 1;
+    reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
     logsRef.current = [entry, ...logsRef.current].slice(0, 200);
     setLogs((prev) => [entry, ...prev].slice(0, 200));
     return true;
@@ -1016,6 +1029,25 @@ export default function App() {
         <div className="panel main">
           <div className="timer">{mm}:{ss}</div>
           <div className="stt">{interimText}</div>
+          <section className="timestamp-panel">
+            <div className="timestamp-head">
+              <strong>감지 타임스탬프</strong>
+              <span>상담 시간 기준 누적</span>
+            </div>
+            <div className="timestamp-list" ref={timelineRef}>
+              {timelineEntries.length === 0 && <p className="empty">감지되면 [00:00] 형식으로 바로 기록됩니다.</p>}
+              {timelineEntries.map((log) => (
+                <article key={log.id} className={`timestamp-row ${log.eventType}`}>
+                  <time>[{log.timestamp}]</time>
+                  <div>
+                    <strong>{eventLabel[log.eventType]} 감지 · {pathLabel[log.detectionPath]}</strong>
+                    <p>{log.maskedText}</p>
+                    <small>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · {log.source}</small>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
           <div className="meter">
             <label>RMS</label>
             <div className="track">
@@ -1109,7 +1141,7 @@ export default function App() {
                   {report.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
                   {report.evidence.map((item) => (
                     <article key={item.id}>
-                      <small>{item.time} · {eventLabel[item.eventType]} · {pathLabel[item.detectionPath]}</small>
+                      <small>[{item.timestamp}] · {eventLabel[item.eventType]} · {pathLabel[item.detectionPath]}</small>
                       <p>{item.maskedText}</p>
                     </article>
                   ))}
@@ -1117,18 +1149,6 @@ export default function App() {
               </>
             )}
           </section>
-          <h2>누적 감지 타임라인</h2>
-          <div className="logs timeline" ref={timelineRef}>
-            {timelineEntries.length === 0 && <p className="empty">감지되는 즉시 여기에 누적됩니다.</p>}
-            {timelineEntries.map((log, index) => (
-              <article key={log.id} className={`log timeline-item ${log.eventType}`}>
-                <b>{String(index + 1).padStart(2, "0")}</b>
-                <small>{log.time} · {eventLabel[log.eventType]} · {pathLabel[log.detectionPath]} · {log.source}</small>
-                <p>{log.maskedText}</p>
-                <span>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"}</span>
-              </article>
-            ))}
-          </div>
         </aside>
       </section>
     </main>
