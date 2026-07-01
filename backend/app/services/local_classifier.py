@@ -16,6 +16,22 @@ DICTIONARY_KEYS = [
     "sexual_exceptions",
     "high_risk_words",
 ]
+AMBIGUOUS_ABUSE_WORDS = {"새끼", "새끼들", "새끼야", "새끼가", "새끼는"}
+OFFSPRING_CONTEXT_WORDS = {
+    "고양이",
+    "강아지",
+    "동물",
+    "새끼고양이",
+    "새끼강아지",
+    "아기고양이",
+    "아기강아지",
+    "새끼를낳",
+    "새끼가태어",
+    "새끼들이태어",
+    "새끼돌봄",
+    "새끼분양",
+}
+BOUNDARY_SENSITIVE_ABUSE_WORDS = {"이새끼", "그새끼", "저새끼"}
 
 
 @lru_cache(maxsize=1)
@@ -40,6 +56,32 @@ def normalize(text: str) -> str:
     return "".join(text.lower().split())
 
 
+def _compact_without_exceptions(text: str, exception_keys: list[str]) -> str:
+    data = load_dictionaries()
+    compact = normalize(text)
+    for key in exception_keys:
+        for exception in data[key]:
+            compact = compact.replace(normalize(exception), "")
+    return compact
+
+
+def _loose_boundary_match(text: str, word: str) -> bool:
+    chars = [re.escape(char) for char in word.lower() if not char.isspace()]
+    if not chars:
+        return False
+    pattern = r"(?<![0-9a-z가-힣])" + r"\s*".join(chars) + r"(?![0-9a-z가-힣])"
+    return bool(re.search(pattern, text.lower()))
+
+
+def _compact_word_present(original: str, compact: str, word: str) -> bool:
+    normalized = normalize(word)
+    if normalized not in compact:
+        return False
+    if normalized in BOUNDARY_SENSITIVE_ABUSE_WORDS:
+        return _loose_boundary_match(original, word)
+    return True
+
+
 def _words_in(text: str, word_key: str, exception_key: str) -> list[str]:
     data = load_dictionaries()
     original = text.lower()
@@ -50,13 +92,26 @@ def _words_in(text: str, word_key: str, exception_key: str) -> list[str]:
         compact = compact.replace(normalize(exception), "")
 
     from_original = [word for word in data[word_key] if word.lower() in original]
-    from_compact = [word for word in data[word_key] if normalize(word) in compact]
+    from_compact = [word for word in data[word_key] if _compact_word_present(original, compact, word)]
 
     return list(dict.fromkeys([*from_original, *from_compact]))
 
 
 def abuse_words_in(text: str) -> list[str]:
     return _words_in(text, "abuse_words", "abuse_exceptions")
+
+
+def ambiguous_abuse_words_in(text: str) -> list[str]:
+    ambiguous = {normalize(word) for word in AMBIGUOUS_ABUSE_WORDS}
+    return [word for word in abuse_words_in(text) if normalize(word) in ambiguous]
+
+
+def should_defer_abuse_to_context(text: str) -> bool:
+    triggered = abuse_words_in(text)
+    if not triggered:
+        return False
+    ambiguous = {normalize(word) for word in AMBIGUOUS_ABUSE_WORDS}
+    return all(normalize(word) in ambiguous for word in triggered)
 
 
 def sexual_words_in(text: str) -> list[str]:
@@ -89,6 +144,10 @@ def mask_abuse(text: str) -> str:
 
 def _has_any(compact: str, words: list[str]) -> bool:
     return any(normalize(word) in compact for word in words)
+
+
+def _is_offspring_context(compact: str) -> bool:
+    return any(word in compact for word in OFFSPRING_CONTEXT_WORDS)
 
 
 def _contextual_fallback(text: str) -> AnalysisResult | None:
@@ -154,12 +213,24 @@ def _contextual_fallback(text: str) -> AnalysisResult | None:
                 triggeredWords=triggers,
             )
 
+    ambiguous_triggered = ambiguous_abuse_words_in(text)
+    if ambiguous_triggered and not _is_offspring_context(compact):
+        return AnalysisResult(
+            abusive=True,
+            severity="mild",
+            categories=["욕설"],
+            emotion="angry",
+            sexual=False,
+            source="fallback",
+            triggeredWords=ambiguous_triggered,
+        )
+
     return None
 
 
 def conservative_fail(text: str) -> AnalysisResult:
     data = load_dictionaries()
-    compact = normalize(text)
+    compact = _compact_without_exceptions(text, ["abuse_exceptions", "sexual_exceptions"])
     triggered = [word for word in data["high_risk_words"] if normalize(word) in compact]
 
     if triggered:
@@ -212,6 +283,9 @@ def classify_local(text: str) -> AnalysisResult | None:
             source="local",
             triggeredWords=sexual_triggered,
         )
+
+    if should_defer_abuse_to_context(text):
+        return None
 
     triggered = abuse_words_in(text)
     if triggered:
