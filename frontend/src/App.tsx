@@ -1229,20 +1229,36 @@ export default function App() {
       timestamp: currentSessionTimestamp(),
     };
 
-    const recent = logsRef.current[0];
     const compactEntry = compactTranscriptText(entry.maskedText);
-    const compactRecent = compactTranscriptText(recent?.maskedText ?? "");
-    const sameGrowingUtterance =
-      recent &&
-      recent.eventType === entry.eventType &&
-      compactEntry.length > 8 &&
-      compactRecent.length > 8 &&
-      (compactEntry.includes(compactRecent) || compactRecent.includes(compactEntry));
-    if (sameGrowingUtterance) {
-      const merged = compactEntry.length >= compactRecent.length ? { ...entry, id: recent.id, time: recent.time, timestamp: recent.timestamp } : recent;
-      reportLogsRef.current = [merged, ...reportLogsRef.current.filter((item) => item.id !== recent.id)].slice(0, 200);
-      logsRef.current = [merged, ...logsRef.current.slice(1)].slice(0, 200);
-      setLogs((prev) => [merged, ...prev.slice(1)].slice(0, 200));
+    const mergeTargets = logsRef.current.slice(0, 10).filter((candidate) => {
+      if (candidate.eventType !== entry.eventType) return false;
+      const compactCandidate = compactTranscriptText(candidate.maskedText);
+      if (compactEntry.length < 8 || compactCandidate.length < 6) return false;
+      return compactEntry.includes(compactCandidate) || compactCandidate.includes(compactEntry);
+    });
+
+    if (mergeTargets.length > 0) {
+      const targetIds = new Set(mergeTargets.map((item) => item.id));
+      const anchor = mergeTargets.at(-1) ?? mergeTargets[0];
+      const longestTarget = mergeTargets.reduce((longest, item) => (
+        compactTranscriptText(item.maskedText).length > compactTranscriptText(longest.maskedText).length ? item : longest
+      ), mergeTargets[0]);
+      const mergedBase = compactEntry.length >= compactTranscriptText(longestTarget.maskedText).length ? entry : longestTarget;
+      const merged = {
+        ...mergedBase,
+        id: anchor.id,
+        time: anchor.time,
+        timestamp: anchor.timestamp,
+      };
+      const nextLogs = [merged, ...logsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
+      const nextReportLogs = [merged, ...reportLogsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
+      reportLogsRef.current = nextReportLogs;
+      logsRef.current = nextLogs;
+      countersRef.current = nextLogs.reduce((acc, item) => {
+        acc[item.eventType] += 1;
+        return acc;
+      }, initialCounts());
+      setLogs(nextLogs);
       if (merged.eventType !== "normal") {
         setLatestDetection({
           id: merged.id,
