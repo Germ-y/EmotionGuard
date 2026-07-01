@@ -85,7 +85,7 @@ const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
   outputDelay: 1.0,
-  meterGain: 400,
+  meterGain: 650,
   beepMinMs: 420,
   beepCharMs: 95,
   beepMaxMs: 1100,
@@ -97,17 +97,17 @@ const CFG = {
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
-  voiceLevelThreshold: 1.2,
-  voicePeakThreshold: 0.006,
+  voiceLevelThreshold: 0.7,
+  voicePeakThreshold: 0.004,
   voiceHoldMs: 520,
   interimDebounceMs: 90,
   recognitionRestartMs: 220,
-  liveChunkMs: 1000,
-  liveChunkMaxInflight: 2,
-  liveChunkMinBytes: 900,
-  liveChunkVoiceWindowMs: 1600,
-  liveChunkMinLevel: 2.2,
-  liveChunkMinPeak: 0.01,
+  liveChunkMs: 1600,
+  liveChunkMaxInflight: 3,
+  liveChunkMinBytes: 700,
+  liveChunkVoiceWindowMs: 2200,
+  liveChunkMinLevel: 0.8,
+  liveChunkMinPeak: 0.004,
   normalRepeatDedupeMs: 10000,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
@@ -667,6 +667,7 @@ export default function App() {
   const [status, setStatus] = useState("대기 중");
   const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
   const [demoDialogue, setDemoDialogue] = useState<DemoDialogueLine[]>([]);
+  const [liveTranscript, setLiveTranscript] = useState("");
   const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
   const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
@@ -687,6 +688,10 @@ export default function App() {
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
   const sessionStartedAtRef = useRef<Date | null>(null);
+  const sessionStartedAtMsRef = useRef<number | null>(null);
+  const sessionRunIdRef = useRef(0);
+  const activeRef = useRef(false);
+  const elapsedRef = useRef(0);
   const timelineRef = useRef<HTMLDivElement>(null);
   const audioFeaturesRef = useRef<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
   const featureUiTsRef = useRef(0);
@@ -728,9 +733,19 @@ export default function App() {
   }, [logs]);
   const timelineEntries = useMemo(() => logs.slice().reverse(), [logs]);
   const conversationEntries = useMemo<ConversationEntry[]>(() => {
+    const liveEntry: ConversationEntry[] = active && liveTranscript.trim()
+      ? [{
+          id: "live-transcript",
+          timestamp: formatDuration(elapsed),
+          role: "고객",
+          text: liveTranscript.trim(),
+          detail: "받아쓰기 중",
+          tone: "normal",
+        }]
+      : [];
     const dialogue = demoDialogue.filter((line) => line.role !== "상담사");
     if (dialogue.length > 0) {
-      return dialogue.map((line) => {
+      const dialogueEntries: ConversationEntry[] = dialogue.map((line) => {
         const risk = line.tone === "risk";
         return {
           id: line.id,
@@ -739,12 +754,13 @@ export default function App() {
           text: line.text,
           detail: line.detail ?? (risk ? "위험 구간만 * 마스킹 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화"),
           tone: line.tone ?? "normal",
-          eventType: risk ? "abuse" : undefined,
+          eventType: risk ? ("abuse" as EventType) : undefined,
         };
       });
+      return [...dialogueEntries, ...liveEntry];
     }
 
-    return timelineEntries.map((log) => ({
+    const logEntries: ConversationEntry[] = timelineEntries.map((log) => ({
       id: log.id,
       timestamp: log.timestamp,
       role: "고객",
@@ -753,7 +769,8 @@ export default function App() {
       tone: log.eventType === "normal" ? "normal" : "risk",
       eventType: log.eventType,
     }));
-  }, [demoDialogue, timelineEntries]);
+    return [...logEntries, ...liveEntry];
+  }, [active, demoDialogue, elapsed, liveTranscript, timelineEntries]);
 
   const abuseStage = escalation.abuse;
   const sexualStage = escalation.sexual;
@@ -767,6 +784,17 @@ export default function App() {
     setRoutePath(path);
   }
 
+  function currentSessionSeconds() {
+    if (!activeRef.current || sessionStartedAtMsRef.current === null) return elapsedRef.current;
+    const seconds = Math.max(0, Math.floor((performance.now() - sessionStartedAtMsRef.current) / 1000));
+    elapsedRef.current = seconds;
+    return seconds;
+  }
+
+  function currentSessionTimestamp() {
+    return formatDuration(currentSessionSeconds());
+  }
+
   function markDemoPhase(phase: DemoPhase) {
     setDemoPhase(phase);
     if (phase === "idle") return;
@@ -777,7 +805,7 @@ export default function App() {
     role: DemoDialogueLine["role"],
     text: string,
     tone: DemoDialogueLine["tone"] = "normal",
-    timestamp = formatSessionTimestamp(sessionStartedAtRef.current, elapsed),
+    timestamp = currentSessionTimestamp(),
     detail?: string,
   ) {
     const id = crypto.randomUUID();
@@ -825,7 +853,7 @@ export default function App() {
     const timeline = timelineRef.current;
     if (!timeline) return;
     timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
-  }, [logs, demoDialogue]);
+  }, [logs, demoDialogue, liveTranscript]);
 
   useEffect(() => {
     if (demoPhase === "idle") return;
@@ -1160,6 +1188,7 @@ export default function App() {
   }
 
   function appendLog(result: AnalyzeResponse, text: string) {
+    if (!activeRef.current) return false;
     const fingerprint = `${result.eventType}:${result.maskedText}:${Math.floor(Date.now() / 1200)}`;
     if (seenEventRef.current.has(fingerprint)) return false;
     seenEventRef.current.add(fingerprint);
@@ -1169,7 +1198,7 @@ export default function App() {
       id: crypto.randomUUID(),
       text,
       time: now(),
-      timestamp: formatSessionTimestamp(sessionStartedAtRef.current, elapsed),
+      timestamp: currentSessionTimestamp(),
     };
 
     countersRef.current[result.eventType] += 1;
@@ -1326,7 +1355,7 @@ export default function App() {
     };
   }
 
-  function generateReport(reason: string, escalationSnapshot = escalationRef.current, durationSeconds = elapsed) {
+  function generateReport(reason: string, escalationSnapshot = escalationRef.current, durationSeconds = currentSessionSeconds()) {
     const nextReport = buildIncidentReport(reason, escalationSnapshot, durationSeconds);
     setReportArchive((prev) => {
       const next = [nextReport, ...prev.filter((item) => item.id !== nextReport.id)].slice(0, REPORT_ARCHIVE_LIMIT);
@@ -1336,30 +1365,42 @@ export default function App() {
     return nextReport;
   }
 
-  async function processText(text: string, analysisMode: AnalysisMode, timing?: SpeechTiming) {
+  async function processText(
+    text: string,
+    analysisMode: AnalysisMode,
+    timing?: SpeechTiming,
+    options: { logNormal?: boolean; runId?: number } = {},
+  ) {
     const clean = text.trim();
     if (!clean) return;
+    const runId = options.runId ?? sessionRunIdRef.current;
+    if (!activeRef.current || runId !== sessionRunIdRef.current) return;
     markDemoPhase(analysisMode === "immediate" ? "detect" : "context");
 
     const raised = analysisMode === "immediate" && Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
     const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
     try {
       const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features);
-      applyPolicy(result, clean, timing);
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
+      applyPolicy(result, clean, timing, { logNormal: Boolean(options.logNormal) });
     } catch {
       setError("분석 서버 연결에 실패했습니다. backend 서버가 실행 중인지 확인해주세요.");
     }
   }
 
-  async function processLiveAudioChunk(blob: Blob, chunkStartedAtMs: number) {
+  async function processLiveAudioChunk(blob: Blob, chunkStartedAtMs: number, runId: number) {
+    if (!activeRef.current || runId !== sessionRunIdRef.current) return;
     if (liveChunkRef.current.inFlight >= CFG.liveChunkMaxInflight) return;
     liveChunkRef.current.inFlight += 1;
 
     try {
       const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`);
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const clean = (transcription.text || "").trim();
       if (!clean) return;
+      setLiveTranscript(clean);
       if (isLikelyLiveSttHallucination(clean)) {
+        setLiveTranscript("");
         setStatus("OpenAI 청크 STT 대기 중");
         return;
       }
@@ -1368,8 +1409,9 @@ export default function App() {
       const raised = Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
       const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
       markDemoPhase("detect");
-      setStatus("OpenAI 1초 청크 STT 분석 중");
+      setStatus("OpenAI 받아쓰기 청크 분석 중");
       const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const exactMasked = scheduleChunkWordMasks(result, clean, transcription.words, chunkStartedAtMs);
       const normalizedClean = compactTranscriptText(clean);
       const repeatedNormal =
@@ -1382,11 +1424,14 @@ export default function App() {
       if (repeatedNormal) return;
       pushContext(clean);
       if (result.eventType === "normal") {
-        setInterimText("정상 발화 수신 중");
-        setStatus("라이브 입력 수신 중");
+        applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
+        setInterimText(clean);
+        setLiveTranscript("");
+        setStatus("받아쓰기 기록");
         return;
       }
       applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked });
+      setLiveTranscript("");
       if (exactMasked) {
         setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
         setDemoStep("OpenAI 청크 STT가 단어 시작/끝 시간을 받아 출력 버퍼에 마스크를 적용했습니다.");
@@ -1430,6 +1475,7 @@ export default function App() {
 
       const chunks: Blob[] = [];
       const chunkStartedAtMs = performance.now();
+      const runId = sessionRunIdRef.current;
       let recorder: MediaRecorder;
       try {
         recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
@@ -1447,10 +1493,11 @@ export default function App() {
         const blobType = mimeType || chunks[0]?.type || "audio/webm";
         const blob = new Blob(chunks, { type: blobType });
         if (
+          runId === sessionRunIdRef.current &&
           blob.size >= CFG.liveChunkMinBytes &&
           Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs
         ) {
-          void processLiveAudioChunk(blob, chunkStartedAtMs);
+          void processLiveAudioChunk(blob, chunkStartedAtMs, runId);
         }
         scheduleNext();
       };
@@ -1468,8 +1515,8 @@ export default function App() {
 
     liveChunkRef.current = { enabled: true, inFlight: 0 };
     scheduleNext(0);
-    setStatus("OpenAI 1초 청크 STT 대기 중");
-    setDemoStep("라이브 음성을 1초 단위로 STT하고 단어 타임스탬프로 삐 처리합니다.");
+    setStatus("OpenAI 받아쓰기 청크 대기 중");
+    setDemoStep("라이브 음성을 짧은 청크로 STT하고 단어 타임스탬프로 삐 처리합니다.");
     return true;
   }
 
@@ -1484,7 +1531,7 @@ export default function App() {
 
     interimCheckRef.current.timer = window.setTimeout(() => {
       interimCheckRef.current.lastText = clean;
-      void processText(clean, "immediate", timing);
+      void processText(clean, "immediate", timing, { runId: sessionRunIdRef.current });
     }, CFG.interimDebounceMs);
   }
 
@@ -1748,7 +1795,7 @@ export default function App() {
     }
     setStatus("3초 문맥 스냅샷 분석 중");
     markDemoPhase("context");
-    await processText(snapshot, "context_snapshot");
+    await processText(snapshot, "context_snapshot", undefined, { runId: sessionRunIdRef.current });
   }
 
   function startRecognition() {
@@ -1799,12 +1846,14 @@ export default function App() {
       }
       if (interim) {
         setInterimText(interim);
+        setLiveTranscript(interim);
         pushContext(interim);
         queueInterimImmediate(interim, timing);
       }
       if (final) {
         pushContext(final);
-        void processText(final, "immediate", timing);
+        void processText(final, "immediate", timing, { logNormal: true, runId: sessionRunIdRef.current });
+        setLiveTranscript("");
         speechStartAtRef.current = null;
       }
     };
@@ -1835,12 +1884,18 @@ export default function App() {
   }
 
   async function startSession() {
+    if (activeRef.current) return;
+    sessionRunIdRef.current += 1;
+    activeRef.current = true;
+    elapsedRef.current = 0;
+    sessionStartedAtMsRef.current = performance.now();
     setError("");
     setLogs([]);
     logsRef.current = [];
     reportLogsRef.current = [];
     setLatestDetection(null);
     setDemoDialogue([]);
+    setLiveTranscript("");
     setDemoStep("데모 버튼을 누르면 현재 상담 세션에 보호 이벤트가 기록됩니다.");
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
@@ -1862,19 +1917,32 @@ export default function App() {
 
     try {
       await startAudio(true);
-      if (!startOpenAIChunkStt()) startRecognition();
+      startOpenAIChunkStt();
+      startRecognition();
       speak("안녕하세요. 원활한 상담을 위해 통화 내용이 녹음됩니다.");
-      audioRef.current.timer = window.setInterval(() => setElapsed((prev) => prev + 1), 1000);
+      const runId = sessionRunIdRef.current;
+      audioRef.current.timer = window.setInterval(() => {
+        if (!activeRef.current || runId !== sessionRunIdRef.current) return;
+        setElapsed(currentSessionSeconds());
+      }, 500);
       audioRef.current.contextTimer = window.setInterval(() => {
+        if (!activeRef.current || runId !== sessionRunIdRef.current) return;
         void runContextSnapshot();
       }, CFG.contextWindowMs);
     } catch {
+      activeRef.current = false;
+      sessionRunIdRef.current += 1;
+      sessionStartedAtMsRef.current = null;
       setActive(false);
       setError("마이크 권한이 필요합니다.");
     }
   }
 
   function stopSession() {
+    const finalElapsed = currentSessionSeconds();
+    activeRef.current = false;
+    sessionRunIdRef.current += 1;
+    elapsedRef.current = finalElapsed;
     const state = audioRef.current;
     liveChunkRef.current.enabled = false;
     if (liveChunkRef.current.timer) window.clearTimeout(liveChunkRef.current.timer);
@@ -1896,10 +1964,12 @@ export default function App() {
     speechStartAtRef.current = null;
     announcingRef.current = false;
     setActive(false);
+    setElapsed(finalElapsed);
+    setLiveTranscript("");
     setLevel(0);
     setMuted(false);
     setStatus("대기 중");
-    generateReport("상담 종료", escalationRef.current, elapsed);
+    generateReport("상담 종료", escalationRef.current, finalElapsed);
     setInterimText("상담이 종료되었습니다. 특이민원 보고서가 생성되었습니다.");
     setStatus("특이민원 보고서 생성 완료");
     markDemoPhase("policy");
