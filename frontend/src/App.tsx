@@ -1833,13 +1833,16 @@ export default function App() {
 
     const recognition = new Recognition();
     let recognitionRunning = false;
+    const runId = sessionRunIdRef.current;
 
     const startSafely = (delay = 0) => {
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       if (audioRef.current.recognition !== recognition) return;
       if (audioRef.current.recognitionRestartTimer) {
         window.clearTimeout(audioRef.current.recognitionRestartTimer);
       }
       audioRef.current.recognitionRestartTimer = window.setTimeout(() => {
+        if (!activeRef.current || runId !== sessionRunIdRef.current) return;
         if (audioRef.current.recognition !== recognition || recognitionRunning) return;
         try {
           recognition.start();
@@ -1857,6 +1860,7 @@ export default function App() {
     recognition.interimResults = true;
     recognition.maxAlternatives = 3;
     recognition.onresult = (event) => {
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       if (announcingRef.current) return;
       const resultAtMs = performance.now();
       if (!speechStartAtRef.current) speechStartAtRef.current = resultAtMs - 650;
@@ -1886,6 +1890,7 @@ export default function App() {
       }
     };
     recognition.onspeechstart = () => {
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       speechStartAtRef.current = performance.now();
       setStatus("음성 입력 감지");
     };
@@ -1894,16 +1899,22 @@ export default function App() {
     };
     recognition.onend = () => {
       recognitionRunning = false;
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       startSafely(CFG.recognitionRestartMs);
     };
     recognition.onerror = (event) => {
       recognitionRunning = false;
+      if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       if (event.error === "no-speech") {
         setStatus("음성 입력 대기 중");
         startSafely(CFG.recognitionRestartMs);
         return;
       }
-      if (event.error === "aborted") return;
+      if (event.error === "aborted") {
+        setStatus("받아쓰기 재연결 중");
+        startSafely(CFG.recognitionRestartMs);
+        return;
+      }
       setError(`음성 인식 오류: ${event.error}`);
       startSafely(CFG.recognitionRestartMs * 2);
     };
