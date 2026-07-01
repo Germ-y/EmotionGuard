@@ -1430,15 +1430,6 @@ export default function App() {
               <strong>상담 타임라인</strong>
               <span>{latestDetection ? `최근 감지 [${latestDetection.timestamp}] · ${eventLabel[latestDetection.eventType]}` : "고객 발화와 보호 조치 누적"}</span>
             </div>
-            {latestDetection && (
-              <article className={`latest-detection ${latestDetection.eventType}`} data-original={latestDetection.original}>
-                <time>[{latestDetection.timestamp}]</time>
-                <div>
-                  <strong>최근 보호 처리 · {latestDetection.title}</strong>
-                  <small>{latestDetection.detail}</small>
-                </div>
-              </article>
-            )}
             <div className="conversation-list" ref={timelineRef}>
               {conversationEntries.length === 0 && <p className="empty">고객 발화가 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
               {conversationEntries.map((entry) => (
