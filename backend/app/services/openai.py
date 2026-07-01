@@ -70,12 +70,12 @@ async def transcribe_audio_with_openai(filename: str, content: bytes, content_ty
         response = await client.post(
             "https://api.openai.com/v1/audio/transcriptions",
             headers={"authorization": f"Bearer {settings.openai_api_key}"},
-            data=[
-                ("model", settings.openai_transcription_model),
-                ("language", "ko"),
-                ("response_format", "verbose_json"),
-                ("timestamp_granularities[]", "word"),
-            ],
+            data={
+                "model": settings.openai_transcription_model,
+                "language": "ko",
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            },
             files={
                 "file": (
                     filename,
