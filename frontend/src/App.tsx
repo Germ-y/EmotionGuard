@@ -34,6 +34,20 @@ type EscalationState = {
   sexual: number;
 };
 
+type IncidentReport = {
+  id: string;
+  generatedAt: string;
+  startedAt: string;
+  duration: string;
+  reason: string;
+  summary: string;
+  recommendation: string;
+  counts: Record<EventType, number>;
+  escalation: EscalationState;
+  actions: string[];
+  evidence: LogEntry[];
+};
+
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
@@ -93,6 +107,16 @@ const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> 
 
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
+}
+
+function formatDateTime(date: Date) {
+  return date.toLocaleString("ko-KR", { hour12: false });
+}
+
+function formatDuration(totalSeconds: number) {
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
 }
 
 function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | "female") {
@@ -174,6 +198,31 @@ function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPr
   };
 }
 
+function reportToText(report: IncidentReport) {
+  const evidence = report.evidence.length
+    ? report.evidence
+        .map((item, index) => `${index + 1}. [${item.time}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.maskedText}`)
+        .join("\n")
+    : "감지된 특이 민원 발화 없음";
+
+  return [
+    "[EmotionGuard 특이민원 발생 보고서]",
+    `보고서 ID: ${report.id}`,
+    `상담 시작: ${report.startedAt}`,
+    `보고서 생성: ${report.generatedAt}`,
+    `상담 시간: ${report.duration}`,
+    `생성 사유: ${report.reason}`,
+    "",
+    `요약: ${report.summary}`,
+    `최고 단계: 폭언/고성 ${report.escalation.abuse}단계, 성희롱 ${report.escalation.sexual}단계`,
+    `조치: ${report.actions.join(", ") || "특이 조치 없음"}`,
+    `권고: ${report.recommendation}`,
+    "",
+    "[증빙 발화]",
+    evidence,
+  ].join("\n");
+}
+
 export default function App() {
   const [active, setActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -190,15 +239,21 @@ export default function App() {
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [immediatePreview, setImmediatePreview] = useState<ProtectionPreview>(() => initialPreview("immediate"));
   const [contextPreview, setContextPreview] = useState<ProtectionPreview>(() => initialPreview("context_snapshot"));
+  const [report, setReport] = useState<IncidentReport | null>(null);
+  const [copyStatus, setCopyStatus] = useState("");
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
+  const logsRef = useRef<LogEntry[]>([]);
+  const reportLogsRef = useRef<LogEntry[]>([]);
   const contextBufferRef = useRef<string[]>([]);
+  const escalationRef = useRef<EscalationState>(initialEscalation());
   const seenEventRef = useRef(new Set<string>());
   const seenStageRef = useRef(new Set<string>());
   const announcingRef = useRef(false);
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
+  const sessionStartedAtRef = useRef<Date | null>(null);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -387,25 +442,31 @@ export default function App() {
 
   function appendLog(result: AnalyzeResponse, text: string) {
     const fingerprint = `${result.eventType}:${result.maskedText}`;
+    const entry: LogEntry = { ...result, id: crypto.randomUUID(), text, time: now() };
+    reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
+
     if (seenEventRef.current.has(fingerprint)) return false;
     seenEventRef.current.add(fingerprint);
 
     countersRef.current[result.eventType] += 1;
-    const entry: LogEntry = { ...result, id: crypto.randomUUID(), text, time: now() };
+    logsRef.current = [entry, ...logsRef.current].slice(0, 100);
     setLogs((prev) => [entry, ...prev].slice(0, 100));
     return true;
   }
 
   function resetEscalation() {
+    escalationRef.current = initialEscalation();
     setEscalation(initialEscalation());
     seenStageRef.current.clear();
   }
 
   function setEscalationStage(kind: keyof EscalationState, stage: number) {
-    setEscalation((prev) => ({
-      ...prev,
+    const next = {
+      ...escalationRef.current,
       [kind]: kind === "abuse" ? clamp(stage, 0, 4) : clamp(stage, 0, 2),
-    }));
+    };
+    escalationRef.current = next;
+    setEscalation(next);
   }
 
   function advanceEscalation(result: AnalyzeResponse, text: string) {
@@ -418,7 +479,11 @@ export default function App() {
     if (seenStageRef.current.has(fingerprint)) return;
     seenStageRef.current.add(fingerprint);
 
-    setEscalation((prev) => ({ ...prev, [kind]: Math.min(maxStage, prev[kind] + 1) }));
+    setEscalation((prev) => {
+      const next = { ...prev, [kind]: Math.min(maxStage, prev[kind] + 1) };
+      escalationRef.current = next;
+      return next;
+    });
   }
 
   function updatePreview(result: AnalyzeResponse, text: string) {
@@ -459,6 +524,71 @@ export default function App() {
       const next = Math.min(4, countersRef.current.abuse + countersRef.current.raised + countersRef.current["abuse-raised"]);
       speak(CFG.warningMessages[Math.max(0, next - 1)]);
     }
+  }
+
+  function buildIncidentReport(reason: string, escalationSnapshot: EscalationState, durationSeconds: number): IncidentReport {
+    const evidence = reportLogsRef.current
+      .filter((log) => log.eventType !== "normal" || log.policyActions.includes("report"))
+      .slice()
+      .reverse();
+    const reportCounts = evidence.reduce((acc, item) => {
+      acc[item.eventType] += 1;
+      return acc;
+    }, initialCounts());
+    const actions = Array.from(new Set(evidence.flatMap((item) => item.policyActions.map((action) => actionLabel[action]))));
+    const generatedAt = new Date();
+    const startedAt = sessionStartedAtRef.current ?? new Date(generatedAt.getTime() - durationSeconds * 1000);
+    const categories = [
+      reportCounts.abuse ? `욕설 ${reportCounts.abuse}건` : "",
+      reportCounts["abuse-raised"] ? `욕설+고성 ${reportCounts["abuse-raised"]}건` : "",
+      reportCounts.raised ? `고성 ${reportCounts.raised}건` : "",
+      reportCounts.sexual ? `성희롱 ${reportCounts.sexual}건` : "",
+    ].filter(Boolean);
+
+    const summary = categories.length
+      ? `특이 민원 발화 ${evidence.length}건이 감지되었습니다. ${categories.join(", ")}이 기록되었고, 최고 단계는 폭언/고성 ${escalationSnapshot.abuse}단계, 성희롱 ${escalationSnapshot.sexual}단계입니다.`
+      : "특이 민원 발화 없이 상담이 종료되었습니다.";
+
+    const recommendation =
+      escalationSnapshot.abuse >= 4
+        ? "폭언/고성 4단계 도달. 상담 종료 안내 및 관리자 이관을 권고합니다."
+        : escalationSnapshot.sexual >= 2
+          ? "성희롱 2단계 도달. 증빙 보존 후 관리자 및 담당 부서 이관을 권고합니다."
+          : evidence.some((item) => item.policyActions.includes("report"))
+            ? "증빙 로그를 보존하고 필요 시 사후 검토를 진행합니다."
+            : "추가 조치 없이 상담 기록만 보존합니다.";
+
+    return {
+      id: `EG-${generatedAt.getTime().toString(36).toUpperCase()}`,
+      generatedAt: formatDateTime(generatedAt),
+      startedAt: formatDateTime(startedAt),
+      duration: formatDuration(durationSeconds),
+      reason,
+      summary,
+      recommendation,
+      counts: reportCounts,
+      escalation: escalationSnapshot,
+      actions,
+      evidence,
+    };
+  }
+
+  function generateReport(reason: string, escalationSnapshot = escalationRef.current, durationSeconds = elapsed) {
+    const nextReport = buildIncidentReport(reason, escalationSnapshot, durationSeconds);
+    setReport(nextReport);
+    setCopyStatus("");
+    return nextReport;
+  }
+
+  async function copyReport() {
+    if (!report) return;
+    try {
+      await navigator.clipboard.writeText(reportToText(report));
+      setCopyStatus("복사 완료");
+    } catch {
+      setCopyStatus("복사 실패");
+    }
+    window.setTimeout(() => setCopyStatus(""), 1600);
   }
 
   async function processText(text: string, analysisMode: AnalysisMode, timing?: SpeechTiming) {
@@ -506,6 +636,8 @@ export default function App() {
     if (active) stopSession();
     setError("");
     setLogs([]);
+    logsRef.current = [];
+    reportLogsRef.current = [];
     countersRef.current = initialCounts();
     seenEventRef.current.clear();
     contextBufferRef.current = [];
@@ -513,6 +645,9 @@ export default function App() {
     setElapsed(0);
     setActive(false);
     setMuted(false);
+    setReport(null);
+    setCopyStatus("");
+    sessionStartedAtRef.current = new Date();
     setDemoPhase("idle");
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
@@ -554,6 +689,7 @@ export default function App() {
 
         setDemoPhase("policy");
         setDemoStep("Policy Engine: 폭언/고성 4단계 점등 완료, 상담 종료 안내 단계");
+        generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 16);
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
       }
@@ -634,6 +770,7 @@ export default function App() {
 
       setDemoPhase("policy");
       setDemoStep("Policy Engine: 단계 상승, 경고, 로그, 보고서 액션 결정 완료");
+      generateReport("데모 종료", escalationRef.current, 8);
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
     }
@@ -717,6 +854,8 @@ export default function App() {
   async function startSession() {
     setError("");
     setLogs([]);
+    logsRef.current = [];
+    reportLogsRef.current = [];
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
     setContextStatus("3초 문맥 스냅샷 대기");
@@ -726,6 +865,9 @@ export default function App() {
     resetEscalation();
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
+    sessionStartedAtRef.current = new Date();
+    setReport(null);
+    setCopyStatus("");
     setDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview(initialPreview("immediate"));
@@ -766,11 +908,10 @@ export default function App() {
     setMuted(false);
     setStatus("대기 중");
     setContextStatus("3초 문맥 스냅샷 대기");
-    setInterimText("상담이 종료되었습니다.");
-    resetEscalation();
-    setDemoPhase("idle");
-    setImmediatePreview(initialPreview("immediate"));
-    setContextPreview(initialPreview("context_snapshot"));
+    generateReport("상담 종료", escalationRef.current, elapsed);
+    setInterimText("상담이 종료되었습니다. 특이민원 보고서가 생성되었습니다.");
+    setStatus("특이민원 보고서 생성 완료");
+    setDemoPhase("policy");
   }
 
   return (
@@ -910,6 +1051,36 @@ export default function App() {
             <div><dt>고성</dt><dd>{counts.raised}</dd></div>
             <div><dt>성희롱</dt><dd>{counts.sexual}</dd></div>
           </dl>
+          <section className={report ? "report-card ready" : "report-card"}>
+            <div className="report-head">
+              <h2>특이민원 보고서</h2>
+              {report && <button onClick={() => void copyReport()}>{copyStatus || "보고서 복사"}</button>}
+            </div>
+            {!report && <p className="empty">상담 종료 시 자동 생성됩니다.</p>}
+            {report && (
+              <>
+                <small>{report.id} · {report.generatedAt}</small>
+                <p>{report.summary}</p>
+                <dl className="report-meta">
+                  <div><dt>상담 시간</dt><dd>{report.duration}</dd></div>
+                  <div><dt>최고 단계</dt><dd>폭언 {report.escalation.abuse} / 성희롱 {report.escalation.sexual}</dd></div>
+                  <div><dt>조치</dt><dd>{report.actions.join(", ") || "특이 조치 없음"}</dd></div>
+                </dl>
+                <strong className="report-subtitle">후속 권고</strong>
+                <p>{report.recommendation}</p>
+                <strong className="report-subtitle">증빙 발화</strong>
+                <div className="report-evidence">
+                  {report.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
+                  {report.evidence.map((item) => (
+                    <article key={item.id}>
+                      <small>{item.time} · {eventLabel[item.eventType]} · {pathLabel[item.detectionPath]}</small>
+                      <p>{item.maskedText}</p>
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
           <h2>실시간 로그</h2>
           <div className="logs">
             {logs.length === 0 && <p className="empty">아직 감지된 로그가 없습니다.</p>}
