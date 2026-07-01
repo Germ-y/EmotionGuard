@@ -967,25 +967,22 @@ export default function App() {
   }
 
   async function runDemo(type: "abuse" | "sexual" | "raised" | "escalation") {
-    if (active) stopSession();
+    if (!active) {
+      setError("상담 시작 후 데모를 실행해주세요.");
+      return;
+    }
     const demoBaseSeconds = elapsed;
-    const setDemoClock = (seconds: number) => {
-      const nextSeconds = demoBaseSeconds + seconds;
-      setElapsed(nextSeconds);
-      sessionStartedAtRef.current = new Date(Date.now() - nextSeconds * 1000);
-      return nextSeconds;
-    };
+    const stamp = (seconds: number) => formatDuration(demoBaseSeconds + seconds);
     const say = async (
       role: DemoDialogueLine["role"],
       text: string,
       seconds: number,
       tone: DemoDialogueLine["tone"] = "normal",
     ) => {
-      setDemoClock(seconds);
       markDemoPhase("input");
       setLevel(tone === "risk" ? 48 : 18);
       setStatus(role === "상담사" ? "상담사 발화 지연 없이 전달" : "고객 음성 입력");
-      pushDemoDialogue(role, text, tone, formatDuration(demoBaseSeconds + seconds));
+      pushDemoDialogue(role, text, tone, stamp(seconds));
       await sleep(620);
     };
     const riskTurn = async (options: {
@@ -998,11 +995,10 @@ export default function App() {
       maskStatus: string;
       systemText: string;
     }) => {
-      setDemoClock(options.seconds);
       markDemoPhase("input");
       setLevel(options.level);
       setStatus("고객 음성 입력");
-      pushDemoDialogue("고객", options.text, "risk", formatDuration(demoBaseSeconds + options.seconds));
+      pushDemoDialogue("고객", options.text, "risk", stamp(options.seconds));
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
       await sleep(520);
 
@@ -1015,10 +1011,9 @@ export default function App() {
 
       markDemoPhase("mask");
       setStatus(options.maskStatus);
-      pushDemoDialogue("시스템", options.systemText, "system", formatDuration(demoBaseSeconds + options.seconds + 1));
+      pushDemoDialogue("시스템", options.systemText, "system", stamp(options.seconds + 1));
       await sleep(620);
 
-      setDemoClock(options.seconds + 3);
       markDemoPhase("context");
       setStatus("GPT 문맥 판단 요청 중");
       setDemoStep("3초 문맥 스냅샷을 정책 엔진에 반영합니다.");
@@ -1027,7 +1022,6 @@ export default function App() {
     };
 
     setError("");
-    setActive(false);
     setMuted(false);
     markDemoPhase("idle");
     interimCheckRef.current.lastText = "";
@@ -1063,11 +1057,9 @@ export default function App() {
         }
 
         markDemoPhase("policy");
-        setDemoClock(25);
-        setDemoStep("Policy Engine: 4단계 도달, 상담 종료 및 보고서 생성");
-        setStatus("4단계 도달: 상담 종료 안내 및 보고서 생성");
-        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system", formatDuration(demoBaseSeconds + 25));
-        generateReport("4단계 상승 데모 종료", escalationRef.current, demoBaseSeconds + 25);
+        setDemoStep("Policy Engine: 4단계 도달, 상담 종료 시 보고서 반영");
+        setStatus("4단계 도달: 상담 종료 권고");
+        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 권고가 기록됩니다. 보고서는 상담 종료 버튼을 누르면 생성됩니다.", "system", stamp(25));
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
       }
@@ -1137,11 +1129,9 @@ export default function App() {
       if (type === "sexual") setEscalationStage("sexual", 2);
 
       markDemoPhase("policy");
-      setDemoClock(14);
-      setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 완료");
-      setStatus("특이민원 보고서 생성 완료");
-      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", formatDuration(demoBaseSeconds + 14));
-      generateReport("데모 종료", escalationRef.current, demoBaseSeconds + 14);
+      setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 대기");
+      setStatus("상담 종료 시 보고서 생성");
+      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", stamp(14));
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
     }
@@ -1253,12 +1243,15 @@ export default function App() {
     logsRef.current = [];
     reportLogsRef.current = [];
     setLatestDetection(null);
+    setDemoDialogue([]);
+    setDemoStep("데모 버튼을 누르면 현재 상담 세션에 보호 이벤트가 기록됩니다.");
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
     setStatus("보호된 상담사 청취 출력");
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
     seenEventRef.current.clear();
+    lastBeepRef.current = null;
     resetEscalation();
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
@@ -1456,11 +1449,11 @@ export default function App() {
       </section>
       <aside className="demo-remote" aria-label="데모 리모콘">
         <strong>DEMO</strong>
-        <span>{demoStep}</span>
-        <button onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
-        <button onClick={() => void runDemo("raised")}>고성 완화</button>
-        <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
-        <button onClick={() => void runDemo("escalation")}>4단계 상승</button>
+        <span>{active ? demoStep : "상담 시작 후 데모를 실행합니다."}</span>
+        <button disabled={!active} onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
+        <button disabled={!active} onClick={() => void runDemo("raised")}>고성 완화</button>
+        <button disabled={!active} onClick={() => void runDemo("sexual")}>성희롱 경고</button>
+        <button disabled={!active} onClick={() => void runDemo("escalation")}>4단계 상승</button>
       </aside>
     </main>
   );
