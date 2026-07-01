@@ -25,7 +25,7 @@
 - STT 스트림 생성
 - 3초 단위 문맥 스냅샷 구성
 - 맥락 엔진이 성희롱, 협박, 반복성, 감정 상태를 판단
-- `ANTHROPIC_API_KEY`가 있으면 Claude API를 호출하고, 키가 없으면 fallback 보수 판단을 사용
+- `OPENAI_API_KEY`가 있으면 GPT API를 우선 호출하고, 없으면 Claude API, 둘 다 없으면 fallback 보수 판단을 사용
 - 느린 판단은 즉시 비프음 처리보다는 경고, 에스컬레이션, 보고서에 사용
 
 ### 정책 엔진
@@ -64,6 +64,6 @@
 | STT 스트림 | Web Speech API |
 | 3초 문맥 스냅샷 | `context_snapshot` 분석 모드 |
 | 로컬 사전 감지 | `backend/app/data/dictionaries.json`, `local_classifier.py` |
-| 맥락 엔진 판단 | `backend/app/services/claude.py` (`source=claude` 또는 `source=fallback`) |
+| 맥락 엔진 판단 | `backend/app/services/context_engine.py` (`source=openai`, `source=claude`, `source=fallback`) |
 | 정책 엔진 | `backend/app/services/policy_engine.py` 및 프론트 단계 카운터 |
 | 로그/대시보드 | React 상담사 대시보드 |

@@ -34,7 +34,7 @@ EMOTION GUARD는 통화가 진행되는 동안 음성 입력을 실시간으로 
 
 | 영역 | 활용 도구 |
 | --- | --- |
-| 맥락 판단 | Claude API(키 설정 시), fallback 보수 판단(키 없음) |
+| 맥락 판단 | OpenAI GPT API 또는 Claude API(키 설정 시), fallback 보수 판단(키 없음) |
 | 즉시 차단 | 로컬 욕설 사전 223개, 성희롱 사전 391개 |
 | 학습·탐지 보조 | 공개 욕설 감지 데이터셋 |
 | 음성 처리 | Web Audio API, Jungle Pitch Shifter |
@@ -71,7 +71,7 @@ Policy Engine
   -> 욕설 구간 비프음, 피치/볼륨 완화, 경고, 보고서 액션 결정
 ```
 
-브라우저에는 상담 화면, 마이크 제어, 출력 보호 마스크, 대시보드 표시만 둡니다. 로컬 사전과 Claude API 키, 문맥 판단 프롬프트는 FastAPI 백엔드에서 관리합니다. 전체 구조는 [docs/architecture.md](docs/architecture.md), 판단 기준은 [docs/judgment-criteria.md](docs/judgment-criteria.md)에 정리되어 있습니다.
+브라우저에는 상담 화면, 마이크 제어, 출력 보호 마스크, 대시보드 표시만 둡니다. 로컬 사전과 OpenAI/Claude API 키, 문맥 판단 프롬프트는 FastAPI 백엔드에서 관리합니다. 전체 구조는 [docs/architecture.md](docs/architecture.md), 판단 기준은 [docs/judgment-criteria.md](docs/judgment-criteria.md)에 정리되어 있습니다.
 
 ## Project Structure
 
@@ -83,6 +83,8 @@ Policy Engine
 │   │   ├── routers/analyze.py
 │   │   └── services
 │   │       ├── claude.py
+│   │       ├── context_engine.py
+│   │       ├── openai.py
 │   │       ├── local_classifier.py
 │   │       └── policy_engine.py
 │   └── .env.example
@@ -107,11 +109,14 @@ pip install -r backend/requirements.txt
 cp backend/.env.example backend/.env
 ```
 
-Claude API를 실제로 쓰려면 `backend/.env`에 API 키를 설정합니다. 키가 비어 있으면 3초 맥락 경로는 Claude를 호출하지 않고 `fallback` 보수 판단으로 동작합니다. fallback은 LLM이 아니라 발표·개발 환경용 제한 규칙 기반 판단입니다.
+GPT API를 실제로 쓰려면 `backend/.env`에 OpenAI API 키를 설정합니다. 키가 비어 있으면 Claude 키를 확인하고, 둘 다 비어 있으면 3초 맥락 경로는 `fallback` 보수 판단으로 동작합니다. fallback은 LLM이 아니라 발표·개발 환경용 제한 규칙 기반 판단입니다.
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4.1-mini
 ```
+
+Claude를 대신 쓰고 싶다면 `ANTHROPIC_API_KEY`를 설정할 수 있습니다. 두 키가 모두 있으면 OpenAI GPT를 우선 사용합니다.
 
 백엔드와 프론트엔드를 각각 실행합니다.
 
@@ -162,7 +167,7 @@ npm run dev:frontend
 `analysisMode`는 두 가지입니다.
 
 - `immediate`: 로컬 사전과 고성 여부를 사용해 즉시 욕설 구간 비프음/피치/볼륨 마스크에 쓰는 경로
-- `context_snapshot`: 3초 단위 STT 스냅샷을 맥락 엔진으로 분석해 경고, 에스컬레이션, 보고서에 쓰는 경로. `ANTHROPIC_API_KEY`가 있으면 Claude API, 없으면 `fallback` 판단을 사용합니다.
+- `context_snapshot`: 3초 단위 STT 스냅샷을 맥락 엔진으로 분석해 경고, 에스컬레이션, 보고서에 쓰는 경로. `OPENAI_API_KEY`가 있으면 GPT API, 없고 `ANTHROPIC_API_KEY`가 있으면 Claude API, 둘 다 없으면 `fallback` 판단을 사용합니다.
 
 응답 예시:
 
@@ -206,14 +211,14 @@ npm run dev:frontend
 
 ## Project Status
 
-현재 저장소에는 단일 HTML 프로토타입을 참고해 프론트엔드와 백엔드를 분리한 초기 구현이 들어 있습니다. 프론트엔드는 실시간 상담 화면과 브라우저 음성 처리를 담당하고, 백엔드는 로컬 사전 판정과 Claude API/fallback 기반 문맥 분석을 담당합니다.
-현재 로컬 `.env`에서 `ANTHROPIC_API_KEY`가 비어 있으면 Claude API는 호출되지 않으며, 응답의 `source`는 `fallback`으로 표시됩니다.
+현재 저장소에는 단일 HTML 프로토타입을 참고해 프론트엔드와 백엔드를 분리한 초기 구현이 들어 있습니다. 프론트엔드는 실시간 상담 화면과 브라우저 음성 처리를 담당하고, 백엔드는 로컬 사전 판정과 GPT/Claude/fallback 기반 문맥 분석을 담당합니다.
+현재 로컬 `.env`에서 `OPENAI_API_KEY`와 `ANTHROPIC_API_KEY`가 모두 비어 있으면 외부 LLM은 호출되지 않으며, 응답의 `source`는 `fallback`으로 표시됩니다.
 
 ## Roadmap
 
 - [x] 프론트엔드/백엔드 프로젝트 구조 분리
 - [x] 욕설·성희롱 로컬 사전 백엔드 모듈화
-- [x] Claude API/fallback 기반 맥락 판단 API 구성
+- [x] GPT/Claude/fallback 기반 맥락 판단 API 구성
 - [x] 고성 감지 및 피치 시프팅 프론트엔드 모듈 구성
 - [x] 즉시 감지 경로와 3초 문맥 판단 경로 분리
 - [x] 정책 엔진 액션 응답 구조 구성

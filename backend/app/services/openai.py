@@ -1,0 +1,62 @@
+import json
+import re
+from typing import Any
+
+import httpx
+
+from app.config import settings
+from app.models import AnalysisResult
+from app.services.claude import ANALYST_SYSTEM
+from app.services.local_classifier import conservative_fail
+
+
+def _coerce_openai_result(payload: dict[str, Any]) -> AnalysisResult:
+    emotion = payload.get("emotion")
+    severity = payload.get("severity")
+
+    return AnalysisResult(
+        abusive=bool(payload.get("abusive")),
+        severity=severity if severity in {"none", "mild", "severe"} else "none",
+        categories=[item for item in payload.get("categories", []) if isinstance(item, str)]
+        if isinstance(payload.get("categories"), list)
+        else [],
+        emotion=emotion if emotion in {"normal", "frustrated", "angry", "threatening"} else "normal",
+        sexual=bool(payload.get("sexual")),
+        source="openai",
+        triggeredWords=[],
+    )
+
+
+async def classify_with_openai(text: str) -> AnalysisResult:
+    if not settings.openai_api_key:
+        return conservative_fail(text)
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "content-type": "application/json",
+                    "authorization": f"Bearer {settings.openai_api_key}",
+                },
+                json={
+                    "model": settings.openai_model,
+                    "max_tokens": settings.openai_max_tokens,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": ANALYST_SYSTEM},
+                        {"role": "user", "content": text},
+                    ],
+                },
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if not match:
+            return conservative_fail(text)
+
+        return _coerce_openai_result(json.loads(match.group(0)))
+    except Exception:
+        return conservative_fail(text)

@@ -98,6 +98,7 @@ const actionLabel: Record<PolicyAction, string> = {
 
 const sourceLabel: Record<PreviewSource, string> = {
   local: "로컬 사전",
+  openai: "GPT API",
   claude: "Claude API",
   fallback: "Fallback(LLM 비활성)",
   browser: "브라우저",
@@ -110,7 +111,7 @@ const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> 
   { id: "input", label: "음성 입력", detail: "20ms Frame" },
   { id: "detect", label: "빠른 감지", detail: "RMS/STT/로컬 사전" },
   { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
-  { id: "context", label: "3초 맥락", detail: "LLM/fallback 판단" },
+  { id: "context", label: "3초 맥락", detail: "GPT/Claude/fallback" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
 

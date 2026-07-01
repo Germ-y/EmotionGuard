@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.models import AnalyzeRequest, AnalyzeResponse
-from app.services.claude import classify_with_claude
+from app.services.context_engine import classify_context
 from app.services.local_classifier import classify_local, mask_abuse, normal_result
 from app.services.policy_engine import decide_policy_actions, resolve_event_type
 
@@ -15,7 +15,7 @@ async def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
     if payload.analysisMode == "immediate":
         analysis = local or normal_result()
     else:
-        analysis = local or await classify_with_claude(payload.text)
+        analysis = local or await classify_context(payload.text)
 
     event_type = resolve_event_type(analysis, payload.raised)
 

@@ -9,7 +9,7 @@ export interface AnalyzeResponse {
   categories: string[];
   emotion: Emotion;
   sexual: boolean;
-  source: "local" | "claude" | "fallback";
+  source: "local" | "openai" | "claude" | "fallback";
   triggeredWords: string[];
   raised: boolean;
   eventType: EventType;
