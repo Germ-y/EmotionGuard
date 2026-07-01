@@ -665,26 +665,19 @@ export default function App() {
     const frames = streamingTranscriptFrames(transcription, fallbackText).slice(0, 120);
     const finalText = transcription.text || fallbackText;
     const timers = frames.map((frame) => window.setTimeout(() => {
-      if (sensitive) {
-        const dots = "●".repeat(clamp(frame.syllables || frame.text.length, 1, 12));
-        updateDemoDialogue(lineId, {
-          text: `STT 수신 중 ${dots}`,
-          detail: `민감 구간 실시간 마스킹 · ${frame.syllables || frame.text.length}음절 처리`,
-        });
-        return;
-      }
+      if (sensitive) return;
 
       updateDemoDialogue(lineId, {
         text: frame.text,
-        detail: "STT 인터림 수신 중",
+        detail: "고객 발화",
       });
     }, Math.max(0, frame.at * 1000)));
 
     const finalAt = frames.at(-1)?.at ?? 0.8;
     timers.push(window.setTimeout(() => {
       updateDemoDialogue(lineId, {
-        text: sensitive ? finalSensitiveText ?? "마스킹 문장 확정 대기" : finalText,
-        detail: sensitive ? "위험 구간만 * 마스킹 · 보호 오디오 출력 완료" : "STT 확정 발화",
+        text: sensitive ? finalSensitiveText ?? finalText : finalText,
+        detail: sensitive ? "위험 구간만 * 마스킹" : "고객 발화",
       });
     }, Math.max(650, finalAt * 1000 + 160)));
 
@@ -1380,7 +1373,7 @@ export default function App() {
         setDemoStep("고객 음성 파일을 STT로 변환한 뒤 재생 시간에 맞춰 인터림을 표시합니다.");
         const transcription = await transcribeDemoAudio(audioKey);
         spokenText = transcription.text || text;
-        const lineId = pushDemoDialogue(role, "STT 수신 대기", tone, stamp(seconds), "음성 파일 분석 완료 · 재생 대기");
+        const lineId = pushDemoDialogue(role, spokenText, tone, stamp(seconds), "고객 발화");
         const playbackMs = await playDemoAudio(audioKey);
         scheduleStreamingSttLine(lineId, transcription, spokenText, tone === "risk");
         await sleep(clamp(playbackMs + 240, 900, 3600));
@@ -1412,13 +1405,13 @@ export default function App() {
         spokenText = transcription.text || options.text;
         lineId = pushDemoDialogue(
           "고객",
-          "STT 수신 대기",
+          spokenText,
           "risk",
           stamp(options.seconds),
-          "단어 타임스탬프 대기",
+          "고객 발화",
         );
       } else {
-        lineId = pushDemoDialogue("고객", "위험 발화 분석 중", "risk", stamp(options.seconds), "마스킹 문장 생성 대기");
+        lineId = pushDemoDialogue("고객", spokenText, "risk", stamp(options.seconds), "고객 발화");
       }
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
       await sleep(options.audioKey ? 260 : 520);
