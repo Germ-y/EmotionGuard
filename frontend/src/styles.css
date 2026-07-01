@@ -169,9 +169,9 @@ button:hover { transform: translateY(-1px); }
   background: transparent;
 }
 .process-step.done::before {
-  border-color: var(--blue);
-  background: var(--blue);
-  box-shadow: 0 0 0 5px rgba(29, 78, 216, 0.1);
+  border-color: #aeb9c7;
+  background: #f8fafc;
+  box-shadow: none;
 }
 .process-step.active {
   background: transparent;
@@ -187,8 +187,7 @@ button:hover { transform: translateY(-1px); }
   color: var(--muted);
   font-size: 12px;
 }
-.process-step.active strong,
-.process-step.done strong {
+.process-step.active strong {
   color: var(--text);
 }
 .process-step span {

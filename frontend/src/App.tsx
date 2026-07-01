@@ -525,6 +525,15 @@ export default function App() {
   }, [logs, demoDialogue]);
 
   useEffect(() => {
+    if (demoPhase === "idle") return;
+    const timer = window.setTimeout(() => {
+      setDemoPhase("idle");
+      setLitPhases([]);
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [demoPhase]);
+
+  useEffect(() => {
     const syncRoute = () => setRoutePath(window.location.pathname);
     window.addEventListener("popstate", syncRoute);
     return () => window.removeEventListener("popstate", syncRoute);
