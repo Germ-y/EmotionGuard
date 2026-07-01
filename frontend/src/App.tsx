@@ -96,6 +96,9 @@ const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   fallback: "기본 문맥 엔진",
 };
 
+const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
+const REPORT_ARCHIVE_LIMIT = 80;
+
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> = [
@@ -163,6 +166,26 @@ function initialEscalation(): EscalationState {
   return { abuse: 0, sexual: 0 };
 }
 
+function loadReportArchive(): IncidentReport[] {
+  try {
+    const raw = window.localStorage.getItem(REPORT_ARCHIVE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is IncidentReport => Boolean(item?.id && item?.generatedAt && item?.summary));
+  } catch {
+    return [];
+  }
+}
+
+function persistReportArchive(reports: IncidentReport[]) {
+  try {
+    window.localStorage.setItem(REPORT_ARCHIVE_KEY, JSON.stringify(reports));
+  } catch {
+    // 데모 저장소 접근이 막힌 환경에서는 현재 화면 상태만 유지합니다.
+  }
+}
+
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
@@ -188,7 +211,81 @@ function reportToText(report: IncidentReport) {
   ].join("\n");
 }
 
+function ReportPage({ reports, onNavigateHome }: { reports: IncidentReport[]; onNavigateHome: () => void }) {
+  const [copiedId, setCopiedId] = useState("");
+
+  async function copyOne(report: IncidentReport) {
+    try {
+      await navigator.clipboard.writeText(reportToText(report));
+      setCopiedId(report.id);
+      window.setTimeout(() => setCopiedId(""), 1600);
+    } catch {
+      setCopiedId("");
+    }
+  }
+
+  return (
+    <main className="app report-page">
+      <header className="topbar">
+        <div>
+          <strong className="brand"><span>Emotion</span>Guard</strong>
+          <p>특이민원 보고서 보관함</p>
+        </div>
+        <button className="primary" onClick={onNavigateHome}>상담 화면</button>
+      </header>
+
+      <section className="report-hero">
+        <div>
+          <strong>보고서 목록</strong>
+          <span>상담 종료 시 생성된 보고서가 최신순으로 누적됩니다.</span>
+        </div>
+        <b>{reports.length}건</b>
+      </section>
+
+      <section className="report-list-page">
+        {reports.length === 0 && (
+          <article className="report-empty">
+            <strong>아직 생성된 보고서가 없습니다.</strong>
+            <p>상담 화면에서 상담을 종료하면 정상/특이 여부와 관계없이 보고서가 자동 저장됩니다.</p>
+          </article>
+        )}
+        {reports.map((item) => (
+          <article key={item.id} className="report-item">
+            <div className="report-item-head">
+              <div>
+                <strong>{item.id}</strong>
+                <span>{item.generatedAt} · {item.reason}</span>
+              </div>
+              <button onClick={() => void copyOne(item)}>{copiedId === item.id ? "복사 완료" : "보고서 복사"}</button>
+            </div>
+            <p>{item.summary}</p>
+            <dl className="report-grid">
+              <div><dt>상담 시간</dt><dd>{item.duration}</dd></div>
+              <div><dt>폭언/고성</dt><dd>{item.escalation.abuse}단계</dd></div>
+              <div><dt>성희롱</dt><dd>{item.escalation.sexual}단계</dd></div>
+              <div><dt>조치</dt><dd>{item.actions.join(", ") || "특이 조치 없음"}</dd></div>
+            </dl>
+            <strong className="report-subtitle">후속 권고</strong>
+            <p>{item.recommendation}</p>
+            <strong className="report-subtitle">증빙 발화</strong>
+            <div className="report-evidence expanded">
+              {item.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
+              {item.evidence.map((evidence) => (
+                <article key={evidence.id} data-original={evidence.text}>
+                  <small>[{evidence.timestamp}] · {eventLabel[evidence.eventType]} · {pathLabel[evidence.detectionPath]}</small>
+                  <p>원문 문장 비공개 기록됨</p>
+                </article>
+              ))}
+            </div>
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
+  const [routePath, setRoutePath] = useState(() => window.location.pathname);
   const [active, setActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
@@ -203,8 +300,7 @@ export default function App() {
   const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
   const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
-  const [report, setReport] = useState<IncidentReport | null>(null);
-  const [copyStatus, setCopyStatus] = useState("");
+  const [reportArchive, setReportArchive] = useState<IncidentReport[]>(() => loadReportArchive());
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
@@ -249,6 +345,12 @@ export default function App() {
   const litPhaseSet = useMemo(() => new Set(litPhases), [litPhases]);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
+  const normalizedRoute = routePath.replace(/\/$/, "") || "/";
+
+  function navigate(path: string) {
+    window.history.pushState(null, "", path);
+    setRoutePath(path);
+  }
 
   function markDemoPhase(phase: DemoPhase) {
     setDemoPhase(phase);
@@ -271,6 +373,12 @@ export default function App() {
     if (!timeline) return;
     timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    const syncRoute = () => setRoutePath(window.location.pathname);
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, []);
 
   async function startAudio() {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -571,20 +679,12 @@ export default function App() {
 
   function generateReport(reason: string, escalationSnapshot = escalationRef.current, durationSeconds = elapsed) {
     const nextReport = buildIncidentReport(reason, escalationSnapshot, durationSeconds);
-    setReport(nextReport);
-    setCopyStatus("");
+    setReportArchive((prev) => {
+      const next = [nextReport, ...prev.filter((item) => item.id !== nextReport.id)].slice(0, REPORT_ARCHIVE_LIMIT);
+      persistReportArchive(next);
+      return next;
+    });
     return nextReport;
-  }
-
-  async function copyReport() {
-    if (!report) return;
-    try {
-      await navigator.clipboard.writeText(reportToText(report));
-      setCopyStatus("복사 완료");
-    } catch {
-      setCopyStatus("복사 실패");
-    }
-    window.setTimeout(() => setCopyStatus(""), 1600);
   }
 
   async function processText(text: string, analysisMode: AnalysisMode, timing?: SpeechTiming) {
@@ -690,8 +790,6 @@ export default function App() {
     setElapsed(0);
     setActive(false);
     setMuted(false);
-    setReport(null);
-    setCopyStatus("");
     setDemoDialogue([]);
     setDemoClock(0);
     markDemoPhase("idle");
@@ -900,8 +998,6 @@ export default function App() {
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     sessionStartedAtRef.current = new Date();
-    setReport(null);
-    setCopyStatus("");
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setActive(true);
@@ -945,6 +1041,10 @@ export default function App() {
     markDemoPhase("policy");
   }
 
+  if (normalizedRoute === "/report") {
+    return <ReportPage reports={reportArchive} onNavigateHome={() => navigate("/")} />;
+  }
+
   return (
     <main className="app">
       <header className="topbar">
@@ -952,9 +1052,12 @@ export default function App() {
           <strong className="brand"><span>Emotion</span>Guard</strong>
           <p>실시간 오디오 보호 게이트웨이 + 3초 AI 문맥 판단</p>
         </div>
-        <button className={active ? "danger" : "primary"} onClick={active ? stopSession : startSession}>
-          {active ? "상담 종료" : "상담 시작"}
-        </button>
+        <div className="top-actions">
+          <button className="secondary" onClick={() => navigate("/report")}>보고서</button>
+          <button className={active ? "danger" : "primary"} onClick={active ? stopSession : startSession}>
+            {active ? "상담 종료" : "상담 시작"}
+          </button>
+        </div>
       </header>
 
       <section className="architecture-strip">
@@ -1080,35 +1183,10 @@ export default function App() {
             <div><dt>고성</dt><dd>{counts.raised}</dd></div>
             <div><dt>성희롱</dt><dd>{counts.sexual}</dd></div>
           </dl>
-          <section className={report ? "report-card ready" : "report-card"}>
-            <div className="report-head">
-              <h2>특이민원 보고서</h2>
-              {report && <button onClick={() => void copyReport()}>{copyStatus || "보고서 복사"}</button>}
-            </div>
-            {!report && <p className="empty">상담 종료 시 자동 생성됩니다.</p>}
-            {report && (
-              <>
-                <small>{report.id} · {report.generatedAt}</small>
-                <p>{report.summary}</p>
-                <dl className="report-meta">
-                  <div><dt>상담 시간</dt><dd>{report.duration}</dd></div>
-                  <div><dt>최고 단계</dt><dd>폭언 {report.escalation.abuse} / 성희롱 {report.escalation.sexual}</dd></div>
-                  <div><dt>조치</dt><dd>{report.actions.join(", ") || "특이 조치 없음"}</dd></div>
-                </dl>
-                <strong className="report-subtitle">후속 권고</strong>
-                <p>{report.recommendation}</p>
-                <strong className="report-subtitle">증빙 발화</strong>
-                <div className="report-evidence">
-                  {report.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
-                  {report.evidence.map((item) => (
-                    <article key={item.id} data-original={item.text}>
-                      <small>[{item.timestamp}] · {eventLabel[item.eventType]} · {pathLabel[item.detectionPath]}</small>
-                      <p>원문 문장 비공개 기록됨</p>
-                    </article>
-                  ))}
-                </div>
-              </>
-            )}
+          <section className="report-link-card">
+            <h2>보고서</h2>
+            <p>상담 종료 시 보고서가 자동 저장됩니다.</p>
+            <button onClick={() => navigate("/report")}>보고서 {reportArchive.length}건 보기</button>
           </section>
         </aside>
       </section>
