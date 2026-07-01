@@ -1,11 +1,25 @@
 import { useMemo, useRef, useState } from "react";
-import { AnalysisMode, analyzeUtterance, AnalyzeResponse, EventType } from "./lib/api";
+import { AnalysisMode, analyzeUtterance, AnalyzeResponse, EventType, PolicyAction } from "./lib/api";
 import { Jungle } from "./lib/audio/jungle";
 
 type LogEntry = AnalyzeResponse & {
   id: string;
   text: string;
   time: string;
+};
+
+type PreviewSource = AnalyzeResponse["source"] | "browser" | "pending";
+
+type ProtectionPreview = {
+  mode: AnalysisMode;
+  title: string;
+  status: string;
+  input: string;
+  output: string;
+  eventType: EventType;
+  source: PreviewSource;
+  emotion: AnalyzeResponse["emotion"];
+  actions: string[];
 };
 
 const CFG = {
@@ -41,6 +55,17 @@ const pathLabel: Record<AnalysisMode, string> = {
   context_snapshot: "3초 문맥",
 };
 
+const actionLabel: Record<PolicyAction, string> = {
+  mute: "묵음",
+  pitch_shift: "피치 완화",
+  volume_reduce: "볼륨 완화",
+  warn_tts: "경고 TTS",
+  escalate: "단계 상승",
+  report: "보고서",
+};
+
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
 }
@@ -56,6 +81,48 @@ function initialCounts() {
   return { normal: 0, abuse: 0, sexual: 0, raised: 0, "abuse-raised": 0 } as Record<EventType, number>;
 }
 
+function initialPreview(mode: AnalysisMode): ProtectionPreview {
+  return {
+    mode,
+    title: mode === "immediate" ? "즉시 마스킹 처리" : "3초 맥락 처리",
+    status: mode === "immediate" ? "STT 인터림과 로컬 사전 감지 대기" : "3초 스냅샷과 Claude 문맥 판단 대기",
+    input: "-",
+    output: "-",
+    eventType: "normal",
+    source: "pending",
+    emotion: "normal",
+    actions: [],
+  };
+}
+
+function summarizePolicy(result: AnalyzeResponse) {
+  if (result.detectionPath === "immediate") {
+    if (result.policyActions.includes("mute")) return "로컬 사전 감지: 출력 커서에서 묵음 마스크 적용";
+    if (result.policyActions.includes("pitch_shift") || result.policyActions.includes("volume_reduce")) {
+      return "RMS 고성 감지: 피치/볼륨 완화 마스크 적용";
+    }
+    return "즉시 위험 없음: 원문 전달";
+  }
+
+  if (result.policyActions.includes("report")) return "Claude 문맥 판단: 경고·에스컬레이션·보고서 액션 반영";
+  if (result.eventType !== "normal") return "Claude 문맥 판단: 단계 상승과 경고 액션 반영";
+  return "Claude 문맥 판단: 특이 위험 없음";
+}
+
+function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPreview {
+  return {
+    mode: result.detectionPath,
+    title: result.detectionPath === "immediate" ? "즉시 마스킹 처리" : "3초 맥락 처리",
+    status: summarizePolicy(result),
+    input,
+    output: result.maskedText || input,
+    eventType: result.eventType,
+    source: result.source,
+    emotion: result.emotion,
+    actions: result.policyActions.map((action) => actionLabel[action]),
+  };
+}
+
 export default function App() {
   const [active, setActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -67,12 +134,16 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [status, setStatus] = useState("대기 중");
   const [contextStatus, setContextStatus] = useState("3초 문맥 스냅샷 대기");
+  const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
+  const [immediatePreview, setImmediatePreview] = useState<ProtectionPreview>(() => initialPreview("immediate"));
+  const [contextPreview, setContextPreview] = useState<ProtectionPreview>(() => initialPreview("context_snapshot"));
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
   const contextBufferRef = useRef<string[]>([]);
   const seenEventRef = useRef(new Set<string>());
   const announcingRef = useRef(false);
+  const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -159,6 +230,17 @@ export default function App() {
           current.raisedLatched = true;
           current.lastRaisedTs = Date.now();
           setInterimText("RMS 고성 분석 감지 - 출력 커서에서 음정을 낮춰 전달합니다.");
+          setImmediatePreview({
+            mode: "immediate",
+            title: "즉시 마스킹 처리",
+            status: "RMS 고성 분석: 출력 커서에서 피치/볼륨 완화 마스크 적용",
+            input: "기준 음량을 초과한 고객 음성",
+            output: "낮아진 음정과 완화된 볼륨으로 상담사에게 전달",
+            eventType: "raised",
+            source: "browser",
+            emotion: "angry",
+            actions: ["피치 완화", "볼륨 완화", "단계 상승"],
+          });
         }
       } else if (nextLevel < threshold * 0.8) {
         current.raisedSustainMs = 0;
@@ -209,7 +291,15 @@ export default function App() {
     return true;
   }
 
+  function updatePreview(result: AnalyzeResponse, text: string) {
+    const preview = previewFromResult(result, text);
+    if (result.detectionPath === "immediate") setImmediatePreview(preview);
+    else setContextPreview(preview);
+  }
+
   function applyPolicy(result: AnalyzeResponse, text: string) {
+    updatePreview(result, text);
+
     const shouldLog =
       result.eventType !== "normal" ||
       result.emotion === "angry" ||
@@ -254,6 +344,108 @@ export default function App() {
     }
   }
 
+  function queueInterimImmediate(text: string) {
+    const clean = text.trim();
+    if (!clean || announcingRef.current) return;
+    if (clean === interimCheckRef.current.lastText) return;
+
+    if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+    setImmediatePreview((prev) => ({
+      ...prev,
+      status: "STT 인터림 분석 대기: 로컬 사전 즉시 확인 준비",
+      input: clean,
+      output: "분석 중",
+      source: "pending",
+      actions: [],
+    }));
+
+    interimCheckRef.current.timer = window.setTimeout(() => {
+      interimCheckRef.current.lastText = clean;
+      void processText(clean, "immediate");
+    }, 360);
+  }
+
+  async function analyzeDemo(text: string, raised: boolean, analysisMode: AnalysisMode) {
+    const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs);
+    applyPolicy(result, text);
+    return result;
+  }
+
+  async function runDemo(type: "abuse" | "sexual" | "raised") {
+    if (active) stopSession();
+    setError("");
+    setLogs([]);
+    countersRef.current = initialCounts();
+    seenEventRef.current.clear();
+    contextBufferRef.current = [];
+    setElapsed(0);
+    setActive(false);
+    setMuted(false);
+    setImmediatePreview(initialPreview("immediate"));
+    setContextPreview(initialPreview("context_snapshot"));
+    interimCheckRef.current.lastText = "";
+    if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+
+    const script = {
+      abuse: {
+        text: "시발 뭐하는 거야",
+        level: 34,
+        raised: false,
+        title: "욕설 즉시 묵음 데모",
+      },
+      sexual: {
+        text: "목소리 섹시해요. 퇴근하면 기다릴게요",
+        level: 36,
+        raised: false,
+        title: "성희롱 경고·보고서 데모",
+      },
+      raised: {
+        text: "왜 이렇게 처리가 늦습니까. 당장 해결하세요",
+        level: 76,
+        raised: true,
+        title: "고성 피치/볼륨 완화 데모",
+      },
+    }[type];
+
+    try {
+      setDemoStep(`${script.title}: 고객 음성 입력`);
+      setInterimText(script.text);
+      setLevel(script.level);
+      setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
+      setImmediatePreview({
+        ...initialPreview("immediate"),
+        status: "고객 음성이 Ring Buffer에 들어오고 STT 인터림이 생성됨",
+        input: script.text,
+        output: "즉시 분석 전",
+      });
+      setContextPreview({
+        ...initialPreview("context_snapshot"),
+        status: "3초 문맥 스냅샷 대기",
+        input: script.text,
+        output: "문맥 분석 전",
+      });
+      await sleep(650);
+
+      setDemoStep("즉시 감지 경로: RMS/STT 인터림/로컬 사전 확인");
+      setStatus(script.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
+      await analyzeDemo(script.text, script.raised, "immediate");
+      await sleep(900);
+
+      setDemoStep("출력 커서: 보호 마스크 적용 후 상담사 청취 출력");
+      setStatus(script.raised ? "고성 구간 피치/볼륨 완화" : "욕설/성희롱 구간 묵음 처리");
+      await sleep(900);
+
+      setDemoStep("3초 문맥 판단 경로: Claude 스냅샷 분석 결과를 정책 엔진에 반영");
+      setContextStatus("3초 문맥 스냅샷 분석 중");
+      await analyzeDemo(script.text, false, "context_snapshot");
+      await sleep(600);
+
+      setDemoStep("Policy Engine: 단계 상승, 경고, 로그, 보고서 액션 결정 완료");
+    } catch {
+      setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
+    }
+  }
+
   function pushContext(text: string) {
     contextBufferRef.current.push(text);
     contextBufferRef.current = contextBufferRef.current.slice(-8);
@@ -267,6 +459,14 @@ export default function App() {
       return;
     }
     setContextStatus("3초 문맥 스냅샷 분석 중");
+    setContextPreview((prev) => ({
+      ...prev,
+      status: "3초 문맥 스냅샷 분석 중: Claude 판단 대기",
+      input: snapshot,
+      output: "문맥 판단 중",
+      source: "pending",
+      actions: [],
+    }));
     await processText(snapshot, "context_snapshot");
   }
 
@@ -294,6 +494,7 @@ export default function App() {
       if (interim) {
         setInterimText(interim);
         pushContext(interim);
+        queueInterimImmediate(interim);
       }
       if (final) {
         pushContext(final);
@@ -317,6 +518,10 @@ export default function App() {
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
     seenEventRef.current.clear();
+    interimCheckRef.current.lastText = "";
+    if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+    setImmediatePreview(initialPreview("immediate"));
+    setContextPreview(initialPreview("context_snapshot"));
     setActive(true);
 
     try {
@@ -340,9 +545,11 @@ export default function App() {
     if (state.raf) cancelAnimationFrame(state.raf);
     if (state.timer) clearInterval(state.timer);
     if (state.contextTimer) clearInterval(state.contextTimer);
+    if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
+    interimCheckRef.current.lastText = "";
     announcingRef.current = false;
     setActive(false);
     setLevel(0);
@@ -350,6 +557,8 @@ export default function App() {
     setStatus("대기 중");
     setContextStatus("3초 문맥 스냅샷 대기");
     setInterimText("상담이 종료되었습니다.");
+    setImmediatePreview(initialPreview("immediate"));
+    setContextPreview(initialPreview("context_snapshot"));
   }
 
   return (
@@ -421,6 +630,42 @@ export default function App() {
             <div><strong>즉시 감지 경로</strong><span>RMS · STT 인터림 · 로컬 사전 · 즉시 마스크</span></div>
             <div><strong>AI 문맥 경로</strong><span>{contextStatus}</span></div>
             <div><strong>출력 커서</strong><span>{CFG.outputDelay}s 지연 후 보호 마스크 적용</span></div>
+          </div>
+          <div className="live-compare">
+            {[immediatePreview, contextPreview].map((preview) => (
+              <article key={preview.mode} className={`preview ${preview.eventType}`}>
+                <div className="preview-head">
+                  <strong>{preview.title}</strong>
+                  <span>{pathLabel[preview.mode]} · {eventLabel[preview.eventType]} · {preview.source}</span>
+                </div>
+                <p>{preview.status}</p>
+                <dl>
+                  <div>
+                    <dt>입력</dt>
+                    <dd>{preview.input}</dd>
+                  </div>
+                  <div>
+                    <dt>처리 결과</dt>
+                    <dd>{preview.output}</dd>
+                  </div>
+                </dl>
+                <div className="action-tags">
+                  {preview.actions.length === 0 && <span>대기</span>}
+                  {preview.actions.map((action) => <span key={action}>{action}</span>)}
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="demo-panel">
+            <div>
+              <strong>데모 모드</strong>
+              <span>{demoStep}</span>
+            </div>
+            <div className="demo-actions">
+              <button onClick={() => void runDemo("abuse")}>욕설 묵음</button>
+              <button onClick={() => void runDemo("raised")}>고성 완화</button>
+              <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
+            </div>
           </div>
         </div>
 
