@@ -42,22 +42,36 @@ EMOTION GUARD는 통화가 진행되는 동안 음성 입력을 실시간으로 
 
 ## Architecture
 
-EmotionGuard는 프론트엔드와 백엔드를 분리한 구조로 개발합니다.
+EmotionGuard는 프론트엔드와 백엔드를 분리하되, 실시간 보호 경로와 3초 AI 문맥 판단 경로를 병렬로 운용합니다.
 
 ```text
-frontend/
-  Web Speech API       실시간 STT
-  Web Audio API        고성 감지, 피치 시프팅, 묵음 처리
-  상담사 대시보드       단계별 경고, 로그, 음량 시각화
+내담자 음성 입력
+  -> 20ms Audio Frame
+  -> Ring Buffer
+  -> Streaming Audio Guard
+  -> 출력 커서에서 보호 마스크 적용
+  -> 보호된 상담사 청취 음성
 
-backend/
-  FastAPI              분석 API 서버
-  Local Dictionary     욕설/성희롱 사전 및 예외어 기반 즉시 판정
-  Claude Analyzer      애매한 발화의 문맥 판단
-  Policy API           분석 결과, 마스킹 텍스트, 이벤트 타입 반환
+즉시 감지 경로
+  -> RMS 고성 분석
+  -> STT 인터림
+  -> 로컬 욕설/성희롱 사전
+  -> 즉시 위험 이벤트
+
+3초 문맥 판단 경로
+  -> STT 스트림 스냅샷
+  -> Claude 문맥 분석
+  -> 성희롱/협박/반복성/감정 상태 판단
+
+Policy Engine
+  -> 폭언/고성 4단계
+  -> 성희롱 2단계
+  -> TTS 오탐 차단
+  -> 중복 감지 방지
+  -> 묵음, 피치/볼륨 완화, 경고, 보고서 액션 결정
 ```
 
-브라우저에는 상담 화면, 마이크 제어, 음성 출력 보호 로직만 둡니다. Claude API 키와 민감한 판정 프롬프트는 백엔드에서만 관리해 클라이언트에 노출하지 않습니다.
+브라우저에는 상담 화면, 마이크 제어, 출력 보호 마스크, 대시보드 표시만 둡니다. 로컬 사전과 Claude API 키, 문맥 판단 프롬프트는 FastAPI 백엔드에서 관리합니다. 상세 기준은 [docs/architecture.md](docs/architecture.md)에 정리되어 있습니다.
 
 ## Project Structure
 
@@ -67,9 +81,13 @@ backend/
 │   ├── app
 │   │   ├── data/dictionaries.json
 │   │   ├── routers/analyze.py
-│   │   ├── services/claude.py
-│   │   └── services/local_classifier.py
+│   │   └── services
+│   │       ├── claude.py
+│   │       ├── local_classifier.py
+│   │       └── policy_engine.py
 │   └── .env.example
+├── docs
+│   └── architecture.md
 ├── frontend
 │   └── src
 │       ├── App.tsx
@@ -111,14 +129,21 @@ npm run dev:frontend
 
 ### `POST /api/analyze`
 
-발화 텍스트와 고성 여부를 받아 로컬 사전 또는 Claude API로 위험 발화를 판정합니다.
+발화 텍스트, 고성 여부, 분석 경로를 받아 위험 발화를 판정합니다.
 
 ```json
 {
   "text": "분석할 발화",
-  "raised": false
+  "raised": false,
+  "analysisMode": "immediate",
+  "contextWindowMs": 3000
 }
 ```
+
+`analysisMode`는 두 가지입니다.
+
+- `immediate`: 로컬 사전과 고성 여부를 사용해 즉시 묵음/피치/볼륨 마스크에 쓰는 경로
+- `context_snapshot`: 3초 단위 STT 스냅샷을 Claude로 분석해 경고, 에스컬레이션, 보고서에 쓰는 경로
 
 응답 예시:
 
@@ -133,7 +158,10 @@ npm run dev:frontend
   "triggeredWords": ["시발"],
   "raised": false,
   "eventType": "abuse",
-  "maskedText": "**"
+  "maskedText": "**",
+  "detectionPath": "immediate",
+  "contextWindowMs": 3000,
+  "policyActions": ["mute", "warn_tts", "escalate", "report"]
 }
 ```
 
@@ -167,6 +195,8 @@ npm run dev:frontend
 - [x] 욕설·성희롱 로컬 사전 백엔드 모듈화
 - [x] Claude API 기반 맥락 판단 API 구성
 - [x] 고성 감지 및 피치 시프팅 프론트엔드 모듈 구성
+- [x] 즉시 감지 경로와 3초 문맥 판단 경로 분리
+- [x] 정책 엔진 액션 응답 구조 구성
 - [ ] 특이 민원 보고서 자동 생성 기능 구현
 - [ ] 상담 세션 로그 저장소 연동
 - [ ] PIP 상담 보조창 재구현

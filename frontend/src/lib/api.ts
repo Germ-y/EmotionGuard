@@ -1,5 +1,7 @@
 export type EventType = "normal" | "abuse" | "sexual" | "raised" | "abuse-raised";
 export type Emotion = "normal" | "frustrated" | "angry" | "threatening";
+export type AnalysisMode = "immediate" | "context_snapshot";
+export type PolicyAction = "mute" | "pitch_shift" | "volume_reduce" | "warn_tts" | "escalate" | "report";
 
 export interface AnalyzeResponse {
   abusive: boolean;
@@ -12,15 +14,23 @@ export interface AnalyzeResponse {
   raised: boolean;
   eventType: EventType;
   maskedText: string;
+  detectionPath: AnalysisMode;
+  contextWindowMs: number;
+  policyActions: PolicyAction[];
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
 
-export async function analyzeUtterance(text: string, raised: boolean): Promise<AnalyzeResponse> {
+export async function analyzeUtterance(
+  text: string,
+  raised: boolean,
+  analysisMode: AnalysisMode,
+  contextWindowMs = 3000,
+): Promise<AnalyzeResponse> {
   const response = await fetch(`${API_BASE_URL}/api/analyze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text, raised }),
+    body: JSON.stringify({ text, raised, analysisMode, contextWindowMs }),
   });
 
   if (!response.ok) {
@@ -29,4 +39,3 @@ export async function analyzeUtterance(text: string, raised: boolean): Promise<A
 
   return response.json() as Promise<AnalyzeResponse>;
 }
-

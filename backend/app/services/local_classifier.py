@@ -85,6 +85,18 @@ def conservative_fail(text: str) -> AnalysisResult:
     )
 
 
+def normal_result() -> AnalysisResult:
+    return AnalysisResult(
+        abusive=False,
+        severity="none",
+        categories=[],
+        emotion="normal",
+        sexual=False,
+        source="local",
+        triggeredWords=[],
+    )
+
+
 def classify_local(text: str) -> AnalysisResult | None:
     if is_local_sexual(text):
         return AnalysisResult(
@@ -110,4 +122,3 @@ def classify_local(text: str) -> AnalysisResult | None:
         )
 
     return None
-
