@@ -92,8 +92,8 @@ const CFG = {
   beepDedupeMs: 2200,
   beepFrequency: 880,
   beepVolume: 0.18,
-  beepPreRollMs: 220,
-  beepPostRollMs: 180,
+  beepPreRollMs: 45,
+  beepPostRollMs: 90,
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
@@ -399,11 +399,20 @@ function wordTimestampSegments(words: TranscriptionWord[], triggeredWords: strin
   const segments = words
     .map((item) => {
       const normalizedWord = normalizeSpeechWord(item.word);
-      const matched = normalizedTriggers.some((trigger) => isTimestampWordMatch(normalizedWord, trigger));
-      if (!matched) return null;
+      const matchedTrigger = normalizedTriggers.find((trigger) => isTimestampWordMatch(normalizedWord, trigger));
+      if (!matchedTrigger) return null;
+      const duration = Math.max(0.08, item.end - item.start);
+      const triggerIndex = Math.max(0, normalizedWord.indexOf(matchedTrigger));
+      const triggerLength = Math.max(1, matchedTrigger.length);
+      const wordLength = Math.max(triggerLength, normalizedWord.length);
+      const isCompoundWord = normalizedWord !== matchedTrigger && normalizedWord.includes(matchedTrigger) && wordLength > triggerLength;
+      const startRatio = isCompoundWord ? triggerIndex / wordLength : 0;
+      const endRatio = isCompoundWord ? (triggerIndex + triggerLength) / wordLength : 1;
+      const triggerStart = item.start + duration * startRatio;
+      const triggerEnd = item.start + duration * endRatio;
       return {
-        start: Math.max(0, item.start - CFG.beepPreRollMs / 1000),
-        end: item.end + CFG.beepPostRollMs / 1000,
+        start: Math.max(0, triggerStart - CFG.beepPreRollMs / 1000),
+        end: Math.max(triggerStart + 0.12, triggerEnd + CFG.beepPostRollMs / 1000),
       };
     })
     .filter((item): item is { start: number; end: number } => Boolean(item))
@@ -1155,7 +1164,7 @@ export default function App() {
     if (!span || !timing) return ctx.currentTime + 0.08;
 
     const utteranceMs = clamp(timing.resultAtMs - timing.startedAtMs, 450, 5000);
-    const ratio = clamp(span.index / Math.max(1, text.length), 0, 0.92);
+    const ratio = clamp((span.index + span.length * 0.08) / Math.max(1, text.length), 0, 0.96);
     const wordInputAtMs = timing.startedAtMs + utteranceMs * ratio - CFG.beepPreRollMs;
     const wordOutputAtMs = wordInputAtMs + CFG.outputDelay * 1000;
     const delaySeconds = Math.max(0.04, (wordOutputAtMs - performance.now()) / 1000);
