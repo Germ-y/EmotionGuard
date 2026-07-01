@@ -150,7 +150,7 @@ button:hover { transform: translateY(-1px); }
   right: 52px;
   height: 2px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, #d8e0ea 8%, #d8e0ea 92%, transparent);
+  background: linear-gradient(90deg, transparent, #d9e1ea 8%, #d9e1ea 92%, transparent);
 }
 .process-step {
   position: relative;
@@ -166,26 +166,25 @@ button:hover { transform: translateY(-1px); }
   content: "";
   position: absolute;
   z-index: 1;
-  top: 2px;
+  top: 12px;
   left: 50%;
   width: 12px;
   height: 12px;
-  border: 1px solid #d6dee8;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 50% 45%, #f8fbff 0 18%, #dce5ef 42%, #cbd5e1 72%);
-  box-shadow: 0 0 0 5px rgba(148, 163, 184, 0.08);
-  transform: translateX(-50%);
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.78) 0 18%, rgba(203, 213, 225, 0.42) 34%, rgba(148, 163, 184, 0.12) 56%, transparent 74%);
+  box-shadow: 0 0 10px rgba(148, 163, 184, 0.1);
+  transform: translate(-50%, -50%);
 }
 .process-step::after {
   content: "";
   position: absolute;
   z-index: 0;
-  top: -5px;
+  top: -1px;
   left: 50%;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
+  width: 44px;
+  height: 38px;
+  border-radius: 50%;
   background: transparent;
   transform: translateX(-50%);
   pointer-events: none;
@@ -194,32 +193,35 @@ button:hover { transform: translateY(-1px); }
   background: transparent;
 }
 .process-step.done::before {
-  border-color: rgba(96, 165, 250, 0.58);
-  background:
-    radial-gradient(circle at 50% 45%, #ffffff 0 15%, #bfdbfe 34%, #60a5fa 66%, #2563eb 100%);
+  width: 13px;
+  height: 13px;
+  top: 12px;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 255, 255, 0.94) 0 14%, rgba(226, 232, 240, 0.62) 31%, rgba(186, 199, 216, 0.26) 54%, transparent 74%);
   box-shadow:
-    0 0 8px rgba(37, 99, 235, 0.34),
-    0 0 18px rgba(59, 130, 246, 0.18);
+    0 0 12px rgba(203, 213, 225, 0.18),
+    0 0 26px rgba(191, 219, 254, 0.12);
 }
 .process-step.done::after {
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.22) 0 24%, rgba(59, 130, 246, 0.1) 42%, transparent 72%);
+  background: radial-gradient(circle at center, rgba(226, 232, 240, 0.2) 0 13%, rgba(191, 219, 254, 0.12) 34%, transparent 74%);
 }
 .process-step.active {
   background: transparent;
   box-shadow: none;
 }
 .process-step.active::before {
-  border-color: #ffffff;
-  background:
-    radial-gradient(circle at 45% 38%, #ffffff 0 12%, #dbeafe 25%, #60a5fa 48%, #1d4ed8 82%);
+  width: 15px;
+  height: 15px;
+  top: 12px;
+  background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.98) 0 12%, rgba(241, 245, 249, 0.76) 28%, rgba(191, 219, 254, 0.28) 52%, transparent 76%);
   box-shadow:
-    0 0 0 1px rgba(29, 78, 216, 0.2),
-    0 0 10px rgba(37, 99, 235, 0.72),
-    0 0 24px rgba(59, 130, 246, 0.42),
-    0 0 42px rgba(96, 165, 250, 0.22);
+    0 0 12px rgba(226, 232, 240, 0.26),
+    0 0 24px rgba(191, 219, 254, 0.16),
+    0 0 48px rgba(203, 213, 225, 0.12);
 }
 .process-step.active::after {
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.34) 0 26%, rgba(59, 130, 246, 0.16) 44%, transparent 74%);
+  width: 58px;
+  height: 46px;
+  background: radial-gradient(circle at center, rgba(248, 250, 252, 0.22) 0 12%, rgba(191, 219, 254, 0.12) 34%, transparent 76%);
 }
 .process-step strong {
   display: block;

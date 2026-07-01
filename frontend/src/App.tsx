@@ -41,7 +41,6 @@ type DemoAudioSpec = {
   src: string;
   transcript: string;
   volume?: number;
-  beepWords?: string[];
 };
 
 type ConversationEntry = {
@@ -170,7 +169,6 @@ const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
     src: "/demo-audio/sexual-harassment.mp3",
     transcript: "목소리 섹시해요. 퇴근하면 기다릴게요.",
     volume: 0.92,
-    beepWords: ["섹시해요", "기다릴게요"],
   },
   "sexual-ambiguous": {
     src: "/demo-audio/sexual-ambiguous.mp3",
@@ -399,6 +397,89 @@ function wordTimestampSegments(words: TranscriptionWord[], triggeredWords: strin
   }, []);
 }
 
+function maskTextByWords(text: string, words: string[]) {
+  return words
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .reduce((masked, word) => {
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const compact = normalizeSpeechWord(word);
+      const flexible = compact
+        ? Array.from(compact).map((character) => character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*")
+        : "";
+      return [escaped, flexible]
+        .filter(Boolean)
+        .reduce((nextMasked, pattern) => {
+          return nextMasked.replace(new RegExp(pattern, "gi"), (match) => "*".repeat(Array.from(match).length));
+        }, masked);
+    }, text);
+}
+
+const genericContextTriggers = new Set([
+  "목소리",
+  "퇴근",
+  "퇴근몇시",
+  "퇴근시간",
+  "몇시에끝나",
+  "집",
+  "주소",
+  "사는곳",
+  "얼굴",
+  "개인연락처",
+  "개인번호",
+  "카톡아이디",
+  "인스타",
+].map(normalizeSpeechWord));
+
+function isGenericContextTrigger(word: string) {
+  const normalized = normalizeSpeechWord(word);
+  return Array.from(genericContextTriggers).some((trigger) => normalized === trigger || normalized.includes(trigger));
+}
+
+function presentContextWords(text: string, candidates: string[]) {
+  const compact = normalizeSpeechWord(text);
+  return candidates.filter((candidate) => compact.includes(normalizeSpeechWord(candidate)));
+}
+
+function contextualSensitiveWords(text: string) {
+  const compact = normalizeSpeechWord(text);
+  const words: string[] = [];
+
+  if (compact.includes("목소리") && compact.includes("섹시")) {
+    words.push(...presentContextWords(text, ["섹시해요", "섹시합니다", "섹시하네요", "섹시해", "섹시"]));
+  }
+
+  if (compact.includes("퇴근") && (compact.includes("기다릴") || compact.includes("기다리"))) {
+    words.push(...presentContextWords(text, [
+      "기다릴게요",
+      "기다릴께요",
+      "기다릴게",
+      "기다릴께",
+      "기다리고있을게요",
+      "기다리고있을게",
+      "기다리겠습니다",
+    ]));
+  }
+
+  if ((compact.includes("집") || compact.includes("주소") || compact.includes("사는곳")) && compact.includes("찾아")) {
+    words.push(...presentContextWords(text, ["찾아갈게요", "찾아갈게", "찾아간다", "찾아가겠습니다"]));
+  }
+
+  return Array.from(new Set(words));
+}
+
+function sensitiveWordsForResult(text: string, result: AnalyzeResponse) {
+  const directWords = result.triggeredWords.filter((word) => !isGenericContextTrigger(word));
+  const contextualWords = result.eventType === "sexual" ? contextualSensitiveWords(text) : [];
+  return Array.from(new Set([...directWords, ...contextualWords]));
+}
+
+function withDisplayMask(result: AnalyzeResponse, text: string) {
+  if (result.eventType === "normal") return result;
+  const maskedText = maskTextByWords(result.maskedText, sensitiveWordsForResult(text, result));
+  return maskedText === result.maskedText ? result : { ...result, maskedText };
+}
+
 function fallbackWordTimings(text: string): TranscriptionWord[] {
   const words = text.trim().split(/\s+/).filter(Boolean);
   const duration = Math.max(0.9, words.join("").length * 0.12);
@@ -441,8 +522,8 @@ function streamingTranscriptFrames(transcription: TranscribeResponse, fallbackTe
   return frames;
 }
 
-function beepDurationFor(result: AnalyzeResponse) {
-  const longest = result.triggeredWords.reduce((max, word) => Math.max(max, word.length), 0);
+function beepDurationFor(result: AnalyzeResponse, words = result.triggeredWords) {
+  const longest = words.reduce((max, word) => Math.max(max, word.length), 0);
   return clamp(CFG.beepMinMs + longest * CFG.beepCharMs, CFG.beepMinMs, CFG.beepMaxMs);
 }
 
@@ -986,7 +1067,7 @@ export default function App() {
   }
 
   function estimateBeepStart(result: AnalyzeResponse, text: string, timing: SpeechTiming | undefined, ctx: AudioContext) {
-    const span = findTriggeredSpan(text, result.triggeredWords);
+    const span = findTriggeredSpan(text, sensitiveWordsForResult(text, result));
     if (!span || !timing) return ctx.currentTime + 0.08;
 
     const utteranceMs = clamp(timing.resultAtMs - timing.startedAtMs, 450, 5000);
@@ -1027,12 +1108,12 @@ export default function App() {
     return true;
   }
 
-  function scheduleChunkWordMasks(result: AnalyzeResponse, words: TranscriptionWord[], chunkStartedAtMs: number) {
+  function scheduleChunkWordMasks(result: AnalyzeResponse, text: string, words: TranscriptionWord[], chunkStartedAtMs: number) {
     if (!result.policyActions.includes("mute")) return false;
     const { ctx } = audioRef.current;
     if (!ctx) return false;
 
-    const segments = wordTimestampSegments(words, result.triggeredWords);
+    const segments = wordTimestampSegments(words, sensitiveWordsForResult(text, result));
     if (segments.length === 0) return false;
 
     const nowMs = performance.now();
@@ -1055,7 +1136,8 @@ export default function App() {
     lastBeepRef.current = { key: beepKey, at: nowMs };
 
     const { ctx, outGain } = audioRef.current;
-    const durationMs = beepDurationFor(result) + CFG.beepPreRollMs + CFG.beepPostRollMs;
+    const sensitiveWords = sensitiveWordsForResult(text, result);
+    const durationMs = beepDurationFor(result, sensitiveWords) + CFG.beepPreRollMs + CFG.beepPostRollMs;
     if (!ctx || !outGain) {
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       setMuted(true);
@@ -1163,34 +1245,35 @@ export default function App() {
       markDemoPhase("policy");
     }
 
+    const displayResult = withDisplayMask(result, text);
     const shouldLog =
       options.logNormal ||
-      result.eventType !== "normal" ||
-      result.emotion === "angry" ||
-      result.emotion === "threatening" ||
-      result.policyActions.includes("report");
-    const logged = shouldLog ? appendLog(result, text) : true;
+      displayResult.eventType !== "normal" ||
+      displayResult.emotion === "angry" ||
+      displayResult.emotion === "threatening" ||
+      displayResult.policyActions.includes("report");
+    const logged = shouldLog ? appendLog(displayResult, text) : true;
 
-    if (result.detectionPath === "immediate") {
-      if (result.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(result, text, timing);
-      if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
-    } else if (result.eventType !== "normal") {
-      const engine = result.source === "openai" ? "GPT" : result.source === "claude" ? "Claude" : "문맥 엔진";
-      setStatus(`${engine} 판단: ${eventLabel[result.eventType]}`);
+    if (displayResult.detectionPath === "immediate") {
+      if (displayResult.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(displayResult, text, timing);
+      if (displayResult.eventType !== "normal") setInterimText(`${eventLabel[displayResult.eventType]} 감지 - ${displayResult.maskedText}`);
+    } else if (displayResult.eventType !== "normal") {
+      const engine = displayResult.source === "openai" ? "GPT" : displayResult.source === "claude" ? "Claude" : "문맥 엔진";
+      setStatus(`${engine} 판단: ${eventLabel[displayResult.eventType]}`);
     } else {
-      const engine = result.source === "openai" ? "GPT" : result.source === "claude" ? "Claude" : "3초 문맥";
+      const engine = displayResult.source === "openai" ? "GPT" : displayResult.source === "claude" ? "Claude" : "3초 문맥";
       setStatus(`${engine} 판단 완료`);
     }
 
-    if (!logged || !result.policyActions.includes("warn_tts")) return;
+    if (!logged || !displayResult.policyActions.includes("warn_tts")) return;
 
-    if (result.eventType === "sexual") {
+    if (displayResult.eventType === "sexual") {
       const next = Math.min(2, countersRef.current.sexual);
       speak(CFG.sexualMessages[Math.max(0, next - 1)]);
       return;
     }
 
-    if (result.eventType !== "normal") {
+    if (displayResult.eventType !== "normal") {
       const next = Math.min(4, countersRef.current.abuse + countersRef.current.raised + countersRef.current["abuse-raised"]);
       speak(CFG.warningMessages[Math.max(0, next - 1)]);
     }
@@ -1287,7 +1370,7 @@ export default function App() {
       markDemoPhase("detect");
       setStatus("OpenAI 1초 청크 STT 분석 중");
       const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
-      const exactMasked = scheduleChunkWordMasks(result, transcription.words, chunkStartedAtMs);
+      const exactMasked = scheduleChunkWordMasks(result, clean, transcription.words, chunkStartedAtMs);
       const normalizedClean = compactTranscriptText(clean);
       const repeatedNormal =
         result.eventType === "normal" &&
@@ -1496,16 +1579,17 @@ export default function App() {
       setStatus(options.raised ? "RMS 고성 분석 감지" : "비윤리 표현 즉시 확인");
       setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "비윤리 표현 감지: 위험 단어 구간 확인");
       const immediateResult = await analyzeDemo(spokenText, options.raised, "immediate");
+      const sensitiveWords = sensitiveWordsForResult(spokenText, immediateResult);
+      const displayMaskedText = maskTextByWords(immediateResult.maskedText, sensitiveWords);
       setEscalationStage(options.stageKind, options.stage);
       if (lineId) {
         updateDemoDialogue(lineId, {
-          text: immediateResult.maskedText,
+          text: displayMaskedText,
           detail: `${eventLabel[immediateResult.eventType]} · 위험 구간만 * 마스킹`,
         });
       }
-      const beepWords = options.audioKey ? demoAudioSpecs[options.audioKey].beepWords ?? immediateResult.triggeredWords : immediateResult.triggeredWords;
       const beepSegments = transcription
-        ? wordTimestampSegments(transcription.words, beepWords)
+        ? wordTimestampSegments(transcription.words, sensitiveWords)
         : [];
       if (options.audioKey && immediateResult.policyActions.includes("mute") && beepSegments.length === 0) {
         setError("STT 단어 타임스탬프에서 욕설 구간을 찾지 못했습니다. 원본 음성은 재생하지 않습니다.");
@@ -1513,7 +1597,7 @@ export default function App() {
       }
       if (options.audioKey) {
         const playbackMs = await playDemoAudio(options.audioKey, beepSegments);
-        if (lineId) scheduleStreamingSttLine(lineId, transcription!, spokenText, true, immediateResult.maskedText);
+        if (lineId) scheduleStreamingSttLine(lineId, transcription!, spokenText, true, displayMaskedText);
         await sleep(clamp(playbackMs + 260, 900, 3600));
       } else {
         await sleep(620);
