@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.models import AnalysisResult
+from app.models import AnalysisResult, AudioFeatures
 from app.services.local_classifier import conservative_fail
 
 
@@ -27,6 +27,12 @@ emotion 판정:
 - angry: 욕설 없이도 분노가 명확함
 - frustrated: 불만이 있으나 공격적이지 않음
 - normal: 일반적인 대화나 문의
+
+음향 메타데이터 활용:
+- audioFeatures가 제공되면 pitchHz, rmsPercent, zeroCrossingRate, syllablesPerSecond를 감정 상태의 보조 근거로만 사용한다.
+- 높은 피치, 큰 음량, 빠른 말속도만으로 sexual=true 또는 abusive=true로 판단하지 않는다.
+- 성희롱 여부는 발화 내용과 상담사 개인을 겨냥한 맥락이 명확할 때만 true로 판단한다.
+- 음향 값은 분노, 위협, 긴장도, 반복성 판단의 보조 신호로 사용한다.
 
 sexual 판정 기준:
 - sexual=true 이면 반드시 abusive=true도 함께 설정
@@ -56,6 +62,13 @@ sexual 판정 기준:
 - categories에는 "욕설", "위협", "성희롱", "성차별", "스토킹", "인신공격" 같은 짧은 한국어 라벨만 넣는다."""
 
 
+def build_analysis_payload(text: str, audio_features: AudioFeatures | None = None) -> str:
+    payload: dict[str, Any] = {"text": text}
+    if audio_features:
+        payload["audioFeatures"] = audio_features.model_dump(exclude_none=True)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _coerce_result(payload: dict[str, Any]) -> AnalysisResult:
     emotion = payload.get("emotion")
     severity = payload.get("severity")
@@ -73,7 +86,7 @@ def _coerce_result(payload: dict[str, Any]) -> AnalysisResult:
     )
 
 
-async def classify_with_claude(text: str) -> AnalysisResult:
+async def classify_with_claude(text: str, audio_features: AudioFeatures | None = None) -> AnalysisResult:
     if not settings.anthropic_api_key:
         return conservative_fail(text)
 
@@ -90,7 +103,7 @@ async def classify_with_claude(text: str) -> AnalysisResult:
                     "model": settings.anthropic_model,
                     "max_tokens": settings.anthropic_max_tokens,
                     "system": ANALYST_SYSTEM,
-                    "messages": [{"role": "user", "content": text}],
+                    "messages": [{"role": "user", "content": build_analysis_payload(text, audio_features)}],
                 },
             )
             response.raise_for_status()

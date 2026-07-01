@@ -16,6 +16,7 @@
 ### 빠른 보호 감지 레이어
 
 - RMS 고성 분석
+- 실시간 pitch, peak, zero crossing rate, spectral centroid 추출
 - 로컬 욕설 사전 감지
 - 로컬 성희롱 표현 감지
 - 즉시 위험 이벤트 생성
@@ -24,6 +25,7 @@
 
 - STT 스트림 생성
 - 3초 단위 문맥 스냅샷 구성
+- STT 텍스트와 음향 메타데이터를 함께 구성
 - 맥락 엔진이 성희롱, 협박, 반복성, 감정 상태를 판단
 - `OPENAI_API_KEY`가 있으면 GPT API를 우선 호출하고, 없으면 Claude API, 둘 다 없으면 fallback 보수 판단을 사용
 - 느린 판단은 즉시 비프음 처리보다는 경고, 에스컬레이션, 보고서에 사용
@@ -62,6 +64,7 @@
 | 피치/볼륨 완화 | `frontend/src/lib/audio/jungle.ts` |
 | 출력 커서 | `AudioContext.createDelay()` 기반 지연 출력 |
 | STT 스트림 | Web Speech API |
+| 음향 메타데이터 | `frontend/src/App.tsx`의 RMS/pitch/ZCR/spectral centroid 추출 |
 | 3초 문맥 스냅샷 | `context_snapshot` 분석 모드 |
 | 로컬 사전 감지 | `backend/app/data/dictionaries.json`, `local_classifier.py` |
 | 맥락 엔진 판단 | `backend/app/services/context_engine.py` (`source=openai`, `source=claude`, `source=fallback`) |

@@ -15,7 +15,7 @@ async def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
     if payload.analysisMode == "immediate":
         analysis = local or normal_result()
     else:
-        analysis = local or await classify_context(payload.text)
+        analysis = local or await classify_context(payload.text, payload.audioFeatures)
 
     event_type = resolve_event_type(analysis, payload.raised)
 
@@ -27,4 +27,5 @@ async def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
         detectionPath=payload.analysisMode,
         contextWindowMs=payload.contextWindowMs,
         policyActions=decide_policy_actions(event_type, analysis, payload.analysisMode),
+        audioFeatures=payload.audioFeatures,
     )

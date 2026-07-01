@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnalysisMode, analyzeUtterance, AnalyzeResponse, EventType, PolicyAction } from "./lib/api";
+import { AnalysisMode, analyzeUtterance, AnalyzeResponse, AudioFeatures, EventType, PolicyAction } from "./lib/api";
 import { Jungle } from "./lib/audio/jungle";
 
 type LogEntry = AnalyzeResponse & {
@@ -21,6 +21,27 @@ type DemoDialogueLine = {
   role: "상담사" | "고객" | "시스템";
   text: string;
   tone?: "normal" | "risk" | "system";
+  timestamp: string;
+};
+
+type ConversationEntry = {
+  id: string;
+  timestamp: string;
+  role: string;
+  text: string;
+  detail: string;
+  tone: "normal" | "risk" | "system";
+  eventType?: EventType;
+  original?: string;
+};
+
+type LatestDetectionView = {
+  id: string;
+  timestamp: string;
+  title: string;
+  detail: string;
+  eventType: EventType;
+  original: string;
 };
 
 type EscalationState = {
@@ -84,7 +105,7 @@ const actionLabel: Record<PolicyAction, string> = {
   mute: "삐 처리",
   pitch_shift: "피치 완화",
   volume_reduce: "볼륨 완화",
-  warn_tts: "경고 TTS",
+  warn_tts: "경고 기록",
   escalate: "단계 상승",
   report: "보고서",
 };
@@ -138,6 +159,97 @@ function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | 
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function rounded(value: number | undefined, digits = 2) {
+  if (value === undefined || Number.isNaN(value)) return undefined;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function countKoreanSyllables(text: string) {
+  return (text.match(/[가-힣]/g) ?? []).length;
+}
+
+function zeroCrossingRate(samples: Float32Array) {
+  let crossings = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    if ((samples[index - 1] >= 0 && samples[index] < 0) || (samples[index - 1] < 0 && samples[index] >= 0)) {
+      crossings += 1;
+    }
+  }
+  return crossings / Math.max(1, samples.length - 1);
+}
+
+function estimatePitch(samples: Float32Array, sampleRate: number) {
+  const minLag = Math.floor(sampleRate / 420);
+  const maxLag = Math.floor(sampleRate / 70);
+  let bestLag = 0;
+  let bestScore = 0;
+  let mean = 0;
+
+  for (let index = 0; index < samples.length; index += 1) {
+    mean += samples[index];
+  }
+  mean /= samples.length;
+
+  let centeredEnergy = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const centered = samples[index] - mean;
+    centeredEnergy += centered * centered;
+  }
+  const rms = Math.sqrt(centeredEnergy / samples.length);
+  if (rms < 0.006) return { pitchHz: undefined, confidence: 0 };
+
+  for (let lag = minLag; lag <= Math.min(maxLag, samples.length - 1); lag += 1) {
+    let score = 0;
+    let leftEnergy = 0;
+    let rightEnergy = 0;
+    for (let index = 0; index < samples.length - lag; index += 1) {
+      const left = samples[index] - mean;
+      const right = samples[index + lag] - mean;
+      score += left * right;
+      leftEnergy += left * left;
+      rightEnergy += right * right;
+    }
+    const normalized = score / Math.sqrt(Math.max(0.000001, leftEnergy * rightEnergy));
+    if (normalized > bestScore) {
+      bestScore = normalized;
+      bestLag = lag;
+    }
+  }
+
+  if (!bestLag || bestScore < 0.18) return { pitchHz: undefined, confidence: rounded(bestScore, 2) ?? 0 };
+  return { pitchHz: rounded(sampleRate / bestLag, 1), confidence: rounded(Math.min(1, bestScore), 2) ?? 0 };
+}
+
+function spectralCentroid(frequencyData: Uint8Array, sampleRate: number) {
+  let weighted = 0;
+  let total = 0;
+  const binHz = sampleRate / 2 / Math.max(1, frequencyData.length);
+  for (let index = 0; index < frequencyData.length; index += 1) {
+    const magnitude = frequencyData[index];
+    weighted += index * binHz * magnitude;
+    total += magnitude;
+  }
+  return total ? rounded(weighted / total, 0) : undefined;
+}
+
+function mergeUtteranceFeatures(base: AudioFeatures, text: string, timing?: SpeechTiming): AudioFeatures {
+  if (!timing) return base;
+  const durationMs = clamp(timing.resultAtMs - timing.startedAtMs, 200, 15000);
+  const syllableCount = countKoreanSyllables(text);
+  return {
+    ...base,
+    utteranceDurationMs: rounded(durationMs, 0),
+    syllableCount,
+    syllablesPerSecond: rounded(syllableCount / Math.max(0.2, durationMs / 1000), 2),
+  };
+}
+
+function featureValue(value: number | undefined, suffix = "", voiceActivity = true) {
+  if (!voiceActivity) return "대기";
+  return value === undefined ? "계산중" : `${value}${suffix}`;
 }
 
 function findTriggeredSpan(text: string, words: string[]) {
@@ -301,6 +413,8 @@ export default function App() {
   const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [reportArchive, setReportArchive] = useState<IncidentReport[]>(() => loadReportArchive());
+  const [audioFeatures, setAudioFeatures] = useState<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
+  const [latestDetection, setLatestDetection] = useState<LatestDetectionView | null>(null);
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
@@ -315,6 +429,8 @@ export default function App() {
   const speechStartAtRef = useRef<number | null>(null);
   const sessionStartedAtRef = useRef<Date | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const audioFeaturesRef = useRef<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
+  const featureUiTsRef = useRef(0);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -339,6 +455,35 @@ export default function App() {
     }, initialCounts());
   }, [logs]);
   const timelineEntries = useMemo(() => logs.slice().reverse(), [logs]);
+  const conversationEntries = useMemo<ConversationEntry[]>(() => {
+    const dialogue = demoDialogue.filter((line) => line.role !== "상담사");
+    if (dialogue.length > 0) {
+      return dialogue.map((line) => {
+        const hidden = line.tone === "risk";
+        return {
+          id: line.id,
+          timestamp: line.timestamp,
+          role: line.role,
+          text: hidden ? "삐 처리된 고객 발화" : line.text,
+          detail: hidden ? "원문 비공개 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화",
+          tone: line.tone ?? "normal",
+          eventType: hidden ? "abuse" : undefined,
+          original: line.text,
+        };
+      });
+    }
+
+    return timelineEntries.map((log) => ({
+      id: log.id,
+      timestamp: log.timestamp,
+      role: "고객",
+      text: "삐 처리된 고객 발화",
+      detail: `${eventLabel[log.eventType]} · ${pathLabel[log.detectionPath]} · ${log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[log.source]}`,
+      tone: log.eventType === "normal" ? "normal" : "risk",
+      eventType: log.eventType,
+      original: log.text,
+    }));
+  }, [demoDialogue, timelineEntries]);
 
   const abuseStage = escalation.abuse;
   const sexualStage = escalation.sexual;
@@ -361,10 +506,15 @@ export default function App() {
     setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
   }
 
-  function pushDemoDialogue(role: DemoDialogueLine["role"], text: string, tone: DemoDialogueLine["tone"] = "normal") {
+  function pushDemoDialogue(
+    role: DemoDialogueLine["role"],
+    text: string,
+    tone: DemoDialogueLine["tone"] = "normal",
+    timestamp = formatSessionTimestamp(sessionStartedAtRef.current, elapsed),
+  ) {
     setDemoDialogue((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), role, text, tone },
+      { id: crypto.randomUUID(), role, text, tone, timestamp },
     ].slice(-8));
   }
 
@@ -372,7 +522,7 @@ export default function App() {
     const timeline = timelineRef.current;
     if (!timeline) return;
     timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
-  }, [logs]);
+  }, [logs, demoDialogue]);
 
   useEffect(() => {
     const syncRoute = () => setRoutePath(window.location.pathname);
@@ -413,6 +563,7 @@ export default function App() {
     if (!state.analyser || !state.jungle) return;
 
     const buffer = new Float32Array(state.analyser.fftSize);
+    const frequencyData = new Uint8Array(state.analyser.frequencyBinCount);
     let lastTs = performance.now();
 
     const loop = () => {
@@ -420,13 +571,33 @@ export default function App() {
       if (!current.analyser || !current.jungle) return;
 
       current.analyser.getFloatTimeDomainData(buffer);
+      current.analyser.getByteFrequencyData(frequencyData);
       const rms = Math.sqrt(buffer.reduce((sum, item) => sum + item * item, 0) / buffer.length);
       const nextLevel = Math.min(100, rms * CFG.meterGain);
-      setLevel((prev) => prev + (nextLevel - prev) * 0.35);
-
       const t = performance.now();
       const dt = t - lastTs;
       lastTs = t;
+
+      setLevel((prev) => prev + (nextLevel - prev) * 0.35);
+      const peak = buffer.reduce((max, item) => Math.max(max, Math.abs(item)), 0);
+      const pitch = current.ctx ? estimatePitch(buffer, current.ctx.sampleRate) : { pitchHz: undefined, confidence: 0 };
+      const voiceActivity = nextLevel >= 3 || peak >= 0.012;
+      const nextFeatures: AudioFeatures = {
+        rms: rounded(rms, 4),
+        rmsPercent: rounded(nextLevel, 1),
+        peak: rounded(peak, 4),
+        pitchHz: pitch.pitchHz,
+        pitchConfidence: pitch.confidence,
+        zeroCrossingRate: rounded(zeroCrossingRate(buffer), 3),
+        spectralCentroidHz: current.ctx ? spectralCentroid(frequencyData, current.ctx.sampleRate) : undefined,
+        voiceActivity,
+      };
+      audioFeaturesRef.current = nextFeatures;
+
+      if (t - featureUiTsRef.current > 220) {
+        featureUiTsRef.current = t;
+        setAudioFeatures(nextFeatures);
+      }
 
       const offset = pitchOffsetForLevel(nextLevel, threshold, gender);
       current.jungle.setPitchOffset(offset);
@@ -494,7 +665,14 @@ export default function App() {
     const { ctx, outGain } = audioRef.current;
     const durationMs = beepDurationFor(result);
     if (!ctx || !outGain) {
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       setMuted(true);
+      if (AudioContextCtor) {
+        const beepCtx = new AudioContextCtor();
+        const startAt = beepCtx.currentTime + 0.04;
+        void beepCtx.resume().then(() => playBeep(beepCtx, startAt, durationMs));
+        window.setTimeout(() => void beepCtx.close(), durationMs + 260);
+      }
       window.setTimeout(() => setMuted(false), durationMs);
       return;
     }
@@ -516,16 +694,8 @@ export default function App() {
     audioRef.current.maskTimer = window.setTimeout(() => setMuted(false), Math.max(0, (endAt - ctx.currentTime) * 1000 + 80));
   }
 
-  function speak(text: string) {
-    announcingRef.current = true;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "ko-KR";
-    utterance.pitch = 1.15;
-    utterance.rate = 0.92;
-    utterance.onend = utterance.onerror = () => {
-      announcingRef.current = false;
-    };
-    window.speechSynthesis.speak(utterance);
+  function speak(_text: string) {
+    announcingRef.current = false;
   }
 
   function appendLog(result: AnalyzeResponse, text: string) {
@@ -545,6 +715,16 @@ export default function App() {
     reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
     logsRef.current = [entry, ...logsRef.current].slice(0, 200);
     setLogs((prev) => [entry, ...prev].slice(0, 200));
+    if (entry.eventType !== "normal") {
+      setLatestDetection({
+        id: entry.id,
+        timestamp: entry.timestamp,
+        title: `${eventLabel[entry.eventType]} · ${pathLabel[entry.detectionPath]}`,
+        detail: `${entry.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[entry.source]}`,
+        eventType: entry.eventType,
+        original: entry.text,
+      });
+    }
     return true;
   }
 
@@ -693,8 +873,9 @@ export default function App() {
     markDemoPhase(analysisMode === "immediate" ? "detect" : "context");
 
     const raised = analysisMode === "immediate" && Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
+    const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
     try {
-      const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs);
+      const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features);
       applyPolicy(result, clean, timing);
     } catch {
       setError("분석 서버 연결에 실패했습니다. backend 서버가 실행 중인지 확인해주세요.");
@@ -717,7 +898,23 @@ export default function App() {
   }
 
   async function analyzeDemo(text: string, raised: boolean, analysisMode: AnalysisMode) {
-    const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs);
+    const demoFeatures = mergeUtteranceFeatures(
+      {
+        rms: raised ? 0.18 : 0.08,
+        rmsPercent: raised ? 76 : 34,
+        peak: raised ? 0.51 : 0.22,
+        pitchHz: raised ? 238 : 174,
+        pitchConfidence: 0.72,
+        zeroCrossingRate: raised ? 0.14 : 0.08,
+        spectralCentroidHz: raised ? 2800 : 1900,
+        voiceActivity: true,
+      },
+      text,
+      { startedAtMs: performance.now() - 900, resultAtMs: performance.now() },
+    );
+    audioFeaturesRef.current = demoFeatures;
+    setAudioFeatures(demoFeatures);
+    const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs, demoFeatures);
     applyPolicy(result, text, { startedAtMs: performance.now() - 900, resultAtMs: performance.now() });
     return result;
   }
@@ -738,7 +935,7 @@ export default function App() {
       markDemoPhase("input");
       setLevel(tone === "risk" ? 48 : 18);
       setStatus(role === "상담사" ? "상담사 발화 지연 없이 전달" : "고객 음성 입력");
-      pushDemoDialogue(role, text, tone);
+      pushDemoDialogue(role, text, tone, formatDuration(seconds));
       await sleep(620);
     };
     const riskTurn = async (options: {
@@ -755,7 +952,7 @@ export default function App() {
       markDemoPhase("input");
       setLevel(options.level);
       setStatus("고객 음성 입력");
-      pushDemoDialogue("고객", options.text, "risk");
+      pushDemoDialogue("고객", options.text, "risk", formatDuration(options.seconds));
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
       await sleep(520);
 
@@ -768,7 +965,7 @@ export default function App() {
 
       markDemoPhase("mask");
       setStatus(options.maskStatus);
-      pushDemoDialogue("시스템", options.systemText, "system");
+      pushDemoDialogue("시스템", options.systemText, "system", formatDuration(options.seconds + 1));
       await sleep(620);
 
       setDemoClock(options.seconds + 3);
@@ -783,6 +980,7 @@ export default function App() {
     setLogs([]);
     logsRef.current = [];
     reportLogsRef.current = [];
+    setLatestDetection(null);
     countersRef.current = initialCounts();
     seenEventRef.current.clear();
     contextBufferRef.current = [];
@@ -829,7 +1027,7 @@ export default function App() {
         setDemoClock(25);
         setDemoStep("Policy Engine: 4단계 도달, 상담 종료 및 보고서 생성");
         setStatus("4단계 도달: 상담 종료 안내 및 보고서 생성");
-        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system");
+        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system", formatDuration(25));
         generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 25);
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
@@ -862,8 +1060,8 @@ export default function App() {
           ["고객", "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요."],
           ["상담사", "민원 내용 중심으로 안내드리겠습니다."],
         ] as Array<[DemoDialogueLine["role"], string]>,
-        systemText: "성희롱 가능 발언으로 경고 TTS와 증빙 로그를 준비했습니다.",
-        maskStatus: "성희롱 경고 TTS 및 증빙 로그",
+        systemText: "성희롱 가능 발언으로 경고 기록과 증빙 로그를 준비했습니다.",
+        maskStatus: "성희롱 경고 기록 및 증빙 로그",
         stageKind: "sexual" as const,
       },
       raised: {
@@ -903,7 +1101,7 @@ export default function App() {
       setDemoClock(14);
       setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 완료");
       setStatus("특이민원 보고서 생성 완료");
-      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system");
+      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", formatDuration(14));
       generateReport("데모 종료", escalationRef.current, 14);
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
@@ -988,6 +1186,7 @@ export default function App() {
     setLogs([]);
     logsRef.current = [];
     reportLogsRef.current = [];
+    setLatestDetection(null);
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
     setStatus("보호된 상담사 청취 출력");
@@ -1139,35 +1338,36 @@ export default function App() {
             </div>
             <strong>{Math.round(level)}</strong>
           </div>
-          {demoDialogue.length > 0 && (
-            <section className="demo-dialogue-panel">
-              <div className="timestamp-head">
-                <strong>시연 대화</strong>
-                <span>데모용 예시 발화</span>
-              </div>
-              <div className="demo-dialogue-list">
-                {demoDialogue.map((line) => (
-                  <article key={line.id} className={`demo-line ${line.tone ?? "normal"}`}>
-                    <b>{line.role}</b>
-                    <p>{line.text}</p>
-                  </article>
-                ))}
-              </div>
-            </section>
-          )}
-          <section className="timestamp-panel">
+          <section className={`acoustic-panel ${audioFeatures.voiceActivity ? "active" : ""}`}>
+            <div><span>입력 상태</span><strong>{audioFeatures.voiceActivity ? "발화 감지" : active ? "무음 대기" : "마이크 대기"}</strong></div>
+            <div><span>Pitch</span><strong>{featureValue(audioFeatures.pitchHz, "Hz", audioFeatures.voiceActivity)}</strong></div>
+            <div><span>Peak</span><strong>{featureValue(audioFeatures.peak, "", audioFeatures.voiceActivity)}</strong></div>
+            <div><span>ZCR</span><strong>{featureValue(audioFeatures.zeroCrossingRate, "", audioFeatures.voiceActivity)}</strong></div>
+            <div><span>Centroid</span><strong>{featureValue(audioFeatures.spectralCentroidHz, "Hz", audioFeatures.voiceActivity)}</strong></div>
+          </section>
+          <section className="timeline-panel">
             <div className="timestamp-head">
-              <strong>문장 타임스탬프</strong>
-              <span>상담 시간 기준 누적</span>
+              <strong>상담 타임라인</strong>
+              <span>{latestDetection ? `최근 감지 [${latestDetection.timestamp}] · ${eventLabel[latestDetection.eventType]}` : "고객 발화와 보호 조치 누적"}</span>
             </div>
-            <div className="timestamp-list" ref={timelineRef}>
-              {timelineEntries.length === 0 && <p className="empty">문장이 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
-              {timelineEntries.map((log) => (
-                <article key={log.id} className={`timestamp-row ${log.eventType}`} data-original={log.text}>
-                  <time>[{log.timestamp}]</time>
+            {latestDetection && (
+              <article className={`latest-detection ${latestDetection.eventType}`} data-original={latestDetection.original}>
+                <time>[{latestDetection.timestamp}]</time>
+                <div>
+                  <strong>최근 보호 처리 · {latestDetection.title}</strong>
+                  <small>{latestDetection.detail}</small>
+                </div>
+              </article>
+            )}
+            <div className="conversation-list" ref={timelineRef}>
+              {conversationEntries.length === 0 && <p className="empty">고객 발화가 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
+              {conversationEntries.map((entry) => (
+                <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.eventType ?? ""}`} data-original={entry.original}>
+                  <time>[{entry.timestamp}]</time>
+                  <b>{entry.role === "시스템" ? "보호 조치" : entry.role}</b>
                   <div>
-                    <strong>원문 문장 비공개 기록됨 · {pathLabel[log.detectionPath]}</strong>
-                    <small>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · {sourceLabel[log.source]}</small>
+                    <strong>{entry.text}</strong>
+                    <small>{entry.detail}</small>
                   </div>
                 </article>
               ))}

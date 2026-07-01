@@ -7,6 +7,8 @@ __pycache__/
 .env.local
 *.log
 data/aihub/
+data/kemdy20/
 .tools/
 download.tar
+*KEMDy*.zip
 backend/app/data/dictionaries.aihub.json

@@ -56,11 +56,14 @@
 맥락 경로는 `analysisMode=context_snapshot`으로 동작한다.
 
 1. 프론트엔드가 최근 STT 텍스트를 3초 단위 스냅샷으로 구성한다.
-2. 백엔드는 먼저 로컬 사전을 검사한다.
-3. 로컬 사전에 걸리지 않으면 `classify_context()`를 호출한다.
-4. `OPENAI_API_KEY`가 있으면 GPT API를 우선 호출한다.
-5. OpenAI 키가 없고 `ANTHROPIC_API_KEY`가 있으면 Claude API를 호출한다.
-6. 두 키가 모두 비어 있거나 API 오류가 나면 `fallback` 보수 판단으로 돌아간다.
+2. 프론트엔드가 RMS, pitch, peak, zero crossing rate, spectral centroid, 발화 속도 추정값을 `audioFeatures`로 함께 보낸다.
+3. 백엔드는 먼저 로컬 사전을 검사한다.
+4. 로컬 사전에 걸리지 않으면 `classify_context()`를 호출한다.
+5. `OPENAI_API_KEY`가 있으면 GPT API를 우선 호출한다.
+6. OpenAI 키가 없고 `ANTHROPIC_API_KEY`가 있으면 Claude API를 호출한다.
+7. 두 키가 모두 비어 있거나 API 오류가 나면 `fallback` 보수 판단으로 돌아간다.
+
+음향 메타데이터는 감정 상태와 긴장도 판단의 보조 근거다. 높은 피치나 큰 음량만으로 성희롱이라고 판단하지 않으며, 성희롱 여부는 발화 내용과 상담사 개인을 겨냥한 맥락을 우선한다.
 
 중요: 현재 로컬 `.env`의 `OPENAI_API_KEY`와 `ANTHROPIC_API_KEY`가 모두 비어 있으면 실제 LLM은 실행되지 않는다. 이때 응답의 `source`는 `fallback`이며, 화면에는 `Fallback(LLM 비활성)`으로 표시된다. fallback은 LLM이 아니라 제한된 규칙 기반 보수 판단이다.
 

@@ -5,8 +5,8 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.models import AnalysisResult
-from app.services.claude import ANALYST_SYSTEM
+from app.models import AnalysisResult, AudioFeatures
+from app.services.claude import ANALYST_SYSTEM, build_analysis_payload
 from app.services.local_classifier import conservative_fail
 
 
@@ -27,7 +27,7 @@ def _coerce_openai_result(payload: dict[str, Any]) -> AnalysisResult:
     )
 
 
-async def classify_with_openai(text: str) -> AnalysisResult:
+async def classify_with_openai(text: str, audio_features: AudioFeatures | None = None) -> AnalysisResult:
     if not settings.openai_api_key:
         return conservative_fail(text)
 
@@ -45,7 +45,7 @@ async def classify_with_openai(text: str) -> AnalysisResult:
                     "response_format": {"type": "json_object"},
                     "messages": [
                         {"role": "system", "content": ANALYST_SYSTEM},
-                        {"role": "user", "content": text},
+                        {"role": "user", "content": build_analysis_payload(text, audio_features)},
                     ],
                 },
             )

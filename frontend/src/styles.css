@@ -296,126 +296,148 @@ button:hover { transform: translateY(-1px); }
   font-variant-numeric: tabular-nums;
   color: #0f172a;
 }
-.timestamp-panel {
-  order: 4;
+.timeline-panel {
+  order: 5;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fbfcff;
-  padding: 12px;
+  background: #ffffff;
+  padding: 14px;
 }
 .timestamp-head {
   display: flex;
   justify-content: space-between;
   gap: 10px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .timestamp-head strong {
-  font-size: 13px;
+  font-size: 15px;
 }
 .timestamp-head span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 850;
 }
-.timestamp-list {
+.latest-detection {
   display: grid;
-  gap: 8px;
-  max-height: 250px;
-  overflow: auto;
-  padding-right: 3px;
-}
-.timestamp-row {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  border: 1px solid var(--line);
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  border: 1px solid #bfd1ff;
+  border-left: 5px solid var(--blue);
   border-radius: 8px;
-  background: white;
-  padding: 9px 10px;
+  background: var(--blue-soft);
+  padding: 13px 14px;
+  margin-bottom: 10px;
 }
-.timestamp-row time {
+.latest-detection.abuse,
+.latest-detection.abuse-raised {
+  border-color: #fecaca;
+  border-left-color: var(--red);
+  background: #fffafa;
+}
+.latest-detection.sexual {
+  border-color: #f9c4dc;
+  border-left-color: var(--pink);
+  background: #fff7fb;
+}
+.latest-detection.raised {
+  border-color: #fed7aa;
+  border-left-color: var(--amber);
+  background: #fffbf5;
+}
+.latest-detection time,
+.conversation-row time {
   color: #0f172a;
   font-size: 14px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
 }
-.timestamp-row strong {
+.latest-detection strong,
+.conversation-row strong {
   display: block;
   color: var(--text);
-  font-size: 12px;
-}
-.timestamp-row p {
-  margin: 4px 0 0;
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
-.timestamp-row small {
+.latest-detection small,
+.conversation-row small {
   display: block;
-  margin-top: 5px;
+  margin-top: 3px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
-.timestamp-row.abuse,
-.timestamp-row.abuse-raised {
-  border-color: #fecaca;
-  background: #fffafa;
-}
-.timestamp-row.sexual {
-  border-color: #f9c4dc;
-  background: #fff7fb;
-}
-.timestamp-row.raised {
-  border-color: #fed7aa;
-  background: #fffbf5;
-}
-.demo-dialogue-panel {
-  order: 3;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 12px;
-}
-.demo-dialogue-list {
+.conversation-list {
   display: grid;
   gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 3px;
 }
-.demo-line {
+.conversation-row {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: 88px 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
   border: 1px solid var(--line);
+  border-left: 5px solid var(--line-strong);
   border-radius: 8px;
-  background: var(--surface);
-  padding: 9px 10px;
+  background: white;
+  padding: 12px 14px;
 }
-.demo-line b {
+.conversation-row b {
+  width: fit-content;
+  min-width: 54px;
+  border-radius: 999px;
+  background: #eef2f7;
+  padding: 5px 9px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 900;
+  text-align: center;
 }
-.demo-line p {
-  margin: 0;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-.demo-line.risk {
+.conversation-row.abuse,
+.conversation-row.abuse-raised,
+.conversation-row.risk {
   border-color: #fecaca;
+  border-left-color: var(--red);
   background: #fffafa;
 }
-.demo-line.risk b { color: var(--red); }
-.demo-line.system {
-  border-color: #c7d8ff;
+.conversation-row.abuse b,
+.conversation-row.abuse-raised b,
+.conversation-row.risk b {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.conversation-row.sexual {
+  border-color: #f9c4dc;
+  border-left-color: var(--pink);
+  background: #fff7fb;
+}
+.conversation-row.sexual b {
+  background: var(--pink-soft);
+  color: var(--pink);
+}
+.conversation-row.raised {
+  border-color: #fed7aa;
+  border-left-color: var(--amber);
+  background: #fffbf5;
+}
+.conversation-row.raised b {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.conversation-row.system {
+  border-color: #bfd1ff;
+  border-left-color: var(--blue);
   background: var(--blue-soft);
 }
-.demo-line.system b { color: var(--blue); }
+.conversation-row.system b {
+  min-width: 74px;
+  background: #dbe7ff;
+  color: var(--blue);
+}
 .meter {
   order: 2;
   display: grid;
@@ -432,6 +454,50 @@ button:hover { transform: translateY(-1px); }
 .meter strong {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.acoustic-panel {
+  order: 3;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcff;
+}
+.acoustic-panel div {
+  min-width: 0;
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.acoustic-panel div:first-child {
+  flex: 1.15 1 0;
+}
+.acoustic-panel div + div {
+  border-left: 1px solid var(--line);
+}
+.acoustic-panel span {
+  display: inline;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.acoustic-panel strong {
+  display: inline;
+  margin-top: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .track {
   position: relative;
@@ -765,6 +831,12 @@ h2 { margin: 0 0 10px; font-size: 14px; }
   }
   .stage-grid { grid-template-columns: 1fr; }
   .guard-panel { grid-template-columns: 1fr; }
+  .acoustic-panel {
+    overflow-x: auto;
+  }
+  .acoustic-panel div {
+    min-width: 116px;
+  }
   .voice-control { justify-content: flex-start; }
   .demo-remote {
     right: 12px;
