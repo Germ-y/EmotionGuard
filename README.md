@@ -1,201 +1,173 @@
-# EMOTION GUARD
+# EmotionGuard
 
-> 감정노동자 보호를 위한 실시간 AI 음성 보호 솔루션
+감정노동자 보호를 위한 실시간 AI 음성 보호 솔루션
 
-EMOTION GUARD(이모션 가드)는 콜센터 상담사가 통화 중 마주하는 욕설, 고성, 성희롱 발언을 실시간으로 감지하고 완화하는 AI 기반 음성 보호 솔루션입니다. 기존 악성 민원 대응이 사후 경고와 녹취 재검토에 머물렀다면, EMOTION GUARD는 상담사가 폭언에 직접 노출되는 순간부터 음성 필터링, 위험 경고, 증빙 확보, 보고서 생성을 자동화합니다.
+EmotionGuard는 콜센터 상담사가 악성 민원 발화에 직접 노출되기 전에 고객 음성을 중간 레이어에서 보호 처리하는 시스템이다. 상담을 대신하는 챗봇이 아니라, 고객 음성이 상담사에게 전달되기 전 욕설 구간 삐 처리, 고성 완화, 성희롱/협박 문맥 판단, 경고/보고서 생성을 수행하는 오디오 보호 게이트웨이다.
 
-## Background
+현재 브랜치 `feat/emotion-analysis-feedback-loop`에는 기본 시연 기능에 더해 감정/음향 메타데이터 기반 피드백 루프와 SKT 음성 감정 데이터셋 연동 준비 코드가 포함되어 있다.
 
-감정노동자는 고객 응대 과정에서 반복적인 언어폭력과 인격 무시에 노출됩니다. 우리나라 취업자 약 2,680만 명 중 감정노동 종사자는 약 1,175만 명으로 전체의 약 43.8%에 달하며, 이들 중 87.7%가 인격 무시를, 81.4%가 욕설·폭언을 경험했습니다.
+## 핵심 기능
 
-감정노동자의 우울증 유병률은 일반인의 약 7배(6%에서 44.1%)이고, 자살 고위험군 비율도 18.2%에 이릅니다. 그러나 기존 대응 매뉴얼은 폭언이나 성희롱이 발생한 뒤 경고하거나 상담 종료를 안내하는 방식에 가깝습니다. 이 과정에서 상담사는 이미 폭력에 노출되며, 사후 검토를 위해 녹취를 다시 듣는 과정에서 2차 피해와 행정 부담이 발생합니다.
+- 실시간 고객 음성 입력 수신 및 상담사 청취용 보호 출력
+- 비윤리 표현 사전 기반 욕설/성희롱 즉시 감지
+- OpenAI Whisper STT 기반 짧은 청크 받아쓰기 및 단어 타임스탬프 활용
+- 욕설 단어 구간만 삐 처리하고 나머지 문장은 유지
+- RMS, pitch, peak, ZCR, spectral centroid 기반 고성/감정 보조 메타데이터 추출
+- OpenAI GPT 또는 Claude 기반 3초 문맥 판단
+- 폭언/고성 4단계, 성희롱 2단계 정책 엔진
+- 상담 종료 시 특이민원 보고서 자동 저장 및 `/report` 화면 분리
+- 대화 중 누적 위험 신호를 다음 판단 입력에 반영하는 피드백 루프
+- mp3 기반 데모 리모콘: 욕설 삐 처리, 성희롱 경고
 
-## Solution
+## 아키텍처
 
-EMOTION GUARD는 통화가 진행되는 동안 음성 입력을 실시간으로 분석해 위험 발화를 감지하고, 상담사에게 전달되기 전 보호 처리를 수행합니다.
+```text
+고객 음성 입력
+  -> 오디오 게이트웨이
+  -> 20ms 오디오 프레임 / Ring Buffer
+  -> 빠른 보호 감지
+      - RMS 고성 분석
+      - 비윤리 표현 사전 감지
+      - STT 청크 단어 타임스탬프
+  -> 보호 마스크
+      - 욕설 구간 삐 처리
+      - 고성 피치/볼륨 완화
+  -> 상담사 청취 출력
 
-| 구분 | 기능 | 설명 |
-| --- | --- | --- |
-| 욕설 차단 | 실시간 비프음 처리 | 비윤리 표현 사전과 공개 욕설 감지 데이터셋을 활용해 욕설을 빠르게 감지하고 비프음으로 대체합니다. |
-| 고성 완화 | 음정 변환 | 기준 데시벨(dB)을 초과하는 고성을 감지하면 Web Audio API 기반 피치 시프터로 음정을 완화합니다. |
-| 성희롱 대응 | 감지·경고·증빙 확보 | 성희롱 표현을 즉시 탐지하고 상담사에게 경고하며 사후 증빙 자료를 확보합니다. |
-| 사후 처리 | 보고서 자동 생성 | 상담 종료 후 특이 민원 발생 보고서를 원클릭으로 생성해 행정 부담을 줄입니다. |
+3초 문맥 경로
+  -> STT 스냅샷
+  -> 음향 메타데이터 결합
+  -> GPT/Claude/fallback 문맥 판단
+  -> 성희롱, 협박, 반복성, 감정 상태 판단
 
-## Key Features
+피드백 루프
+  -> 이전 발화의 이벤트/감정/음향 추세 누적
+  -> feedbackContext 생성
+  -> 다음 /api/analyze 입력에 약한 prior로 반영
+```
 
-- 실시간 욕설 감지 및 비프음 대체
-- 고성·고압적 음성의 음정 완화
-- 성희롱 발언 감지, 경고, 증빙 확보
-- 상담 종료 후 특이 민원 보고서 자동 생성
-- 음량 변화 시각화 및 단계별 경고
-- 비윤리 표현 사전 기반 즉시 차단과 선택적 Claude API 기반 맥락 판단을 결합한 하이브리드 탐지
+피드백 루프는 단독으로 욕설이나 성희롱을 확정하지 않는다. 반복 위험, 감정 상승, 애매한 성희롱 단서가 있을 때 문맥 엔진을 더 적극적으로 호출하고 판단 보조 근거로만 사용한다.
 
-## AI & Technology
+## 기술 스택
 
-| 영역 | 활용 도구 |
+| 영역 | 기술 |
 | --- | --- |
-| 맥락 판단 | OpenAI GPT API 또는 Claude API(키 설정 시), fallback 보수 판단(키 없음) |
-| 즉시 차단 | 비윤리 표현 사전, 성희롱 표현 사전, 선택적 AI-Hub 확장 사전 |
-| 학습·탐지 보조 | AI-Hub 텍스트 윤리검증 데이터 기반 후보 어휘 추출, 감정 음성 메타데이터 |
-| 음성 처리 | Web Audio API, Jungle Pitch Shifter |
-| 업무 자동화 | 보고서 자동 생성, 음량 시각화, 단계별 경고 모듈 |
+| Frontend | React 19, Vite, TypeScript |
+| Backend | FastAPI, Pydantic, Uvicorn |
+| STT | OpenAI audio transcription, word timestamp |
+| 문맥 판단 | OpenAI GPT 우선, Claude 대체, fallback 보수 판단 |
+| 오디오 처리 | Web Audio API, Jungle Pitch Shifter |
+| 데이터 준비 | AI-Hub 비윤리 표현 사전, KEMDy20/SKT 음성 감정 메타데이터 추출 스크립트 |
 
-## Architecture
+## 실행 방법
 
-EmotionGuard는 프론트엔드와 백엔드를 분리하되, 실시간 보호 경로와 3초 AI 문맥 판단 경로를 병렬로 운용합니다.
+### 1. 의존성 설치
 
-```text
-내담자 음성 입력
-  -> 20ms Audio Frame
-  -> Ring Buffer
-  -> Streaming Audio Guard
-  -> 출력 커서에서 보호 마스크 적용
-  -> 보호된 상담사 청취 음성
-
-즉시 감지 경로
-  -> RMS 고성 분석
-  -> STT 인터림
-  -> 비윤리/성희롱 표현 사전
-  -> 즉시 위험 이벤트
-
-3초 문맥 판단 경로
-  -> STT 스트림 스냅샷
-  -> pitch/RMS/ZCR 등 음향 메타데이터 결합
-  -> 맥락 엔진 판단
-  -> 성희롱/협박/반복성/감정 상태 판단
-
-Policy Engine
-  -> 폭언/고성 4단계
-  -> 성희롱 2단계
-  -> TTS 오탐 차단
-  -> 중복 감지 방지
-  -> 욕설 구간 비프음, 피치/볼륨 완화, 경고, 보고서 액션 결정
-```
-
-브라우저에는 상담 화면, 마이크 제어, 출력 보호 마스크, 대시보드 표시만 둡니다. 비윤리 표현 사전과 OpenAI/Claude API 키, 문맥 판단 프롬프트는 FastAPI 백엔드에서 관리합니다. 전체 구조는 [docs/architecture.md](docs/architecture.md), 판단 기준은 [docs/judgment-criteria.md](docs/judgment-criteria.md)에 정리되어 있습니다.
-
-## Project Structure
-
-```text
-.
-├── backend
-│   ├── app
-│   │   ├── data/dictionaries.json
-│   │   ├── data/dictionaries.aihub.json  # gitignore, optional generated file
-│   │   ├── routers/analyze.py
-│   │   └── services
-│   │       ├── claude.py
-│   │       ├── context_engine.py
-│   │       ├── openai.py
-│   │       ├── local_classifier.py
-│   │       └── policy_engine.py
-│   └── .env.example
-├── docs
-│   ├── aihub-dictionary.md
-│   ├── architecture.md
-│   ├── emotion-metadata.md
-│   └── judgment-criteria.md
-├── scripts
-│   ├── aihub_download_ethics.sh
-│   ├── extract_aihub_ethics_dictionary.py
-│   └── extract_kemdy20_metadata.py
-├── frontend
-│   └── src
-│       ├── App.tsx
-│       ├── lib/api.ts
-│       └── lib/audio/jungle.ts
-└── package.json
-```
-
-## Getting Started
-
-```bash
-npm install
+```powershell
+cd C:\Users\yungg\Downloads\EmotionGuard
+npm install --prefix frontend
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend/requirements.txt
-cp backend/.env.example backend/.env
+.\.venv\Scripts\activate
+pip install -r backend\requirements.txt
+Copy-Item backend\.env.example backend\.env
 ```
 
-GPT API를 실제로 쓰려면 `backend/.env`에 OpenAI API 키를 설정합니다. 키가 비어 있으면 Claude 키를 확인하고, 둘 다 비어 있으면 3초 맥락 경로는 `fallback` 보수 판단으로 동작합니다. fallback은 LLM이 아니라 발표·개발 환경용 제한 규칙 기반 판단입니다.
+### 2. 환경 변수 설정
+
+`backend/.env`에 필요한 API 키를 넣는다. 실제 키는 커밋하지 않는다.
 
 ```env
-OPENAI_API_KEY=sk-...
+PORT=8000
+CORS_ORIGIN=http://localhost:4003,http://127.0.0.1:4003
+OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 
-Claude를 대신 쓰고 싶다면 `ANTHROPIC_API_KEY`를 설정할 수 있습니다. 두 키가 모두 있으면 OpenAI GPT를 우선 사용합니다.
+주의:
 
-### AI-Hub 사전 확장
+- `/api/transcribe`는 OpenAI API 키가 없으면 502를 반환한다.
+- `/api/analyze`는 OpenAI/Claude 키가 없어도 fallback 판단으로 동작한다.
+- OpenAI와 Claude 키가 모두 있으면 현재 코드는 OpenAI를 우선 사용한다.
 
-AI-Hub `텍스트 윤리검증 데이터`를 내려받았거나 루트에 `download.tar`를 둔 경우, 아래 명령으로 데이터셋 확장 사전을 만들 수 있습니다.
+### 3. 서버 실행
 
-```bash
-python scripts/extract_aihub_ethics_dictionary.py download.tar
-```
+PowerShell 창을 두 개 열어 각각 실행한다.
 
-생성되는 `backend/app/data/dictionaries.aihub.json`은 gitignore 대상이며, 존재할 때만 백엔드가 기본 표현 사전에 병합합니다. WSL에서 AI-Hub API로 직접 받는 절차는 [docs/aihub-dictionary.md](docs/aihub-dictionary.md)에 정리했습니다.
-
-### 감정 음성 메타데이터
-
-현재 앱은 모델 학습 전 단계에서도 마이크 입력에서 `Pitch`, `Peak`, `ZCR`, `Spectral Centroid`를 실시간으로 계산해 백엔드 문맥 판단에 함께 전달합니다. KEMDy20 zip 또는 폴더를 받으면 다음 명령으로 세그먼트 단위 메타데이터 CSV를 만들 수 있습니다.
-
-```bash
-python scripts/extract_kemdy20_metadata.py KEMDy20_v1_3.zip
-```
-
-자세한 구조는 [docs/emotion-metadata.md](docs/emotion-metadata.md)에 정리했습니다.
-
-백엔드와 프론트엔드를 각각 실행합니다.
-
-```bash
+```powershell
 npm run dev:backend
+```
+
+```powershell
 npm run dev:frontend
 ```
 
-기본 실행 주소는 다음과 같습니다.
+기본 주소:
 
 - Frontend: `http://127.0.0.1:4003`
-- Backend: `http://localhost:8000`
-- Health Check: `http://localhost:8000/health`
+- Backend: `http://127.0.0.1:8000`
+- Health Check: `http://127.0.0.1:8000/health`
 
-프론트엔드 dev 서버는 발표 환경에서 포트가 바뀌지 않도록 `4003`에 고정되어 있습니다. 백엔드는 `localhost:4003`과 `127.0.0.1:4003`을 모두 CORS 허용합니다.
+## 데모 흐름
 
-## Demo Mode
+1. 백엔드와 프론트엔드를 실행한다.
+2. 브라우저에서 `http://127.0.0.1:4003` 접속한다.
+3. `상담 시작`을 누르고 마이크 권한을 허용한다.
+4. 실제 음성 입력이 들어오면 받아쓰기, 보호 상태, 타임라인이 갱신된다.
+5. 오른쪽 데모 리모콘에서 mp3 기반 시나리오를 실행할 수 있다.
+6. 상담 종료 시 보고서가 자동 생성되고 `/report`에서 누적 보고서를 확인한다.
 
-실제 통화에서는 즉시 보호 경로와 3초 문맥 판단 경로가 병렬로 동작합니다. 다만 발표 데모에서는 동시성을 그대로 보여주기 어렵기 때문에, 프론트엔드에 단계형 데모 버튼을 제공합니다.
+현재 데모 리모콘에 남긴 버튼:
 
-- 상담 시작 후 발화하면 화면의 `즉시 마스킹 처리` 카드가 STT 인터림과 비윤리 표현 판단 결과를 바로 표시합니다.
-- 같은 발화는 3초 단위로 모여 `3초 맥락 처리` 카드에 표시되고, 맥락 엔진 판단 결과가 경고·에스컬레이션·보고서 액션으로 이어집니다.
-- 상단 과정 표시등은 `음성 입력 → 빠른 감지 → 보호 마스크 → 3초 맥락 → 정책 엔진` 순서로 현재 처리 단계를 점등합니다.
-- 폭언/고성 4단계와 성희롱 2단계 표시등은 위험 이벤트가 단계에 진입할 때 켜집니다.
-- 상담 종료 또는 데모 종료 시 세션 로그 기반 `특이민원 보고서`가 자동 생성되고, 증빙 발화와 후속 권고를 복사할 수 있습니다.
-- `욕설 삐 처리`: 비윤리 표현 감지 → timestamp 기반 욕설 단어 구간 비프음 → 로그/보고서 액션
-- `고성 완화`: RMS 고성 분석 → 피치/볼륨 완화 → 단계 상승
-- `성희롱 경고`: 성희롱 표현 감지 → 경고 TTS → 3초 문맥 판단 → 보고서 액션
-- `4단계 상승`: 반복 폭언 이벤트 → 1단계부터 4단계까지 단계 표시등 순차 점등
+- `욕설 삐 처리`: mp3 발화를 STT로 분석하고 욕설 단어 구간만 삐 처리
+- `성희롱 경고`: mp3 발화를 문맥 판단과 정책 엔진으로 처리
 
-마이크 권한을 쓰기 어려운 발표 환경에서는 데모 버튼만 눌러도 동일한 카드가 순서대로 갱신됩니다. 실제 아키텍처는 유지하면서 발표자가 설명하기 쉬운 순서로 상태를 시각화합니다.
+## 주요 화면
+
+- 메인 상담 화면: 실시간 타이머, 단계 그래프, RMS, 음향 메타데이터, 상담 타임라인
+- 감지 현황 패널: 욕설, 욕설+고성, 고성, 성희롱 카운터
+- 피드백 루프 카드: 위험 점수, 반복 신호, 음향 추세 표시
+- 보고서 화면 `/report`: 상담 종료 후 생성된 특이민원 보고서 목록
 
 ## API
 
 ### `POST /api/analyze`
 
-발화 텍스트, 고성 여부, 분석 경로를 받아 위험 발화를 판정합니다.
+발화 텍스트, 고성 여부, 분석 모드, 음향 메타데이터, 피드백 컨텍스트를 받아 정책 결과를 반환한다.
 
 ```json
 {
   "text": "분석할 발화",
   "raised": false,
   "analysisMode": "immediate",
-  "contextWindowMs": 3000
+  "contextWindowMs": 3000,
+  "audioFeatures": {
+    "rmsPercent": 34,
+    "peak": 0.22,
+    "pitchHz": 174,
+    "zeroCrossingRate": 0.08,
+    "spectralCentroidHz": 1900,
+    "voiceActivity": true
+  },
+  "feedbackContext": {
+    "sessionRiskScore": 38,
+    "repeatedRisk": false,
+    "abuseCount": 1,
+    "sexualCount": 0,
+    "raisedCount": 0,
+    "normalCount": 3,
+    "recentEvents": ["normal", "abuse"],
+    "recentEmotions": ["normal", "angry"],
+    "recentCategories": ["욕설"],
+    "recentTriggeredWords": [],
+    "lastEventType": "abuse",
+    "lastEmotion": "angry",
+    "acousticTrend": "stable",
+    "notes": []
+  }
 }
 ```
-
-`analysisMode`는 두 가지입니다.
-
-- `immediate`: 비윤리 표현 사전과 고성 여부를 사용해 즉시 욕설 구간 비프음/피치/볼륨 마스크에 쓰는 경로
-- `context_snapshot`: 3초 단위 STT 스냅샷을 맥락 엔진으로 분석해 경고, 에스컬레이션, 보고서에 쓰는 경로. `OPENAI_API_KEY`가 있으면 GPT API, 없고 `ANTHROPIC_API_KEY`가 있으면 Claude API, 둘 다 없으면 `fallback` 판단을 사용합니다.
 
 응답 예시:
 
@@ -207,54 +179,130 @@ npm run dev:frontend
   "emotion": "angry",
   "sexual": false,
   "source": "local",
-  "triggeredWords": ["시발"],
+  "triggeredWords": ["욕설단어"],
   "raised": false,
   "eventType": "abuse",
-  "maskedText": "**",
+  "maskedText": "***",
   "detectionPath": "immediate",
   "contextWindowMs": 3000,
   "policyActions": ["mute", "warn_tts", "escalate", "report"]
 }
 ```
 
-## Target Users
+### `POST /api/transcribe`
 
-1차 적용 대상은 서울특별시 120다산콜재단(다산콜센터)입니다.
+오디오 파일을 받아 OpenAI STT 결과와 단어 타임스탬프를 반환한다.
 
-이후 다음 영역으로 확장할 수 있습니다.
+```text
+multipart/form-data
+- file: audio blob
+- prompt: optional
+```
 
-- 공공기관 콜센터
-- 민간 고객센터
-- 행정 민원 응대 기관
-- 교육·의료 분야 음성 응대 기관
-- 감정노동 보호가 필요한 실시간 상담 조직
+## 데이터셋 준비
 
-## Expected Impact
+### AI-Hub 비윤리 표현 사전
 
-- 상담사의 욕설·성희롱 직접 노출 감소
-- 녹취 재검토 과정에서 발생하는 2차 피해 완화
-- 특이 민원 보고서 작성 시간 단축
-- 악성 민원 대응 기준의 일관성 확보
-- 사후 대응 중심 매뉴얼을 실시간 보호 중심 시스템으로 전환
+AI-Hub 텍스트 윤리검증 데이터셋에서 욕설/성희롱 후보를 추출해 백엔드 사전에 병합할 수 있다.
 
-## Project Status
+```powershell
+python scripts\extract_aihub_ethics_dictionary.py download.tar
+```
 
-현재 저장소에는 단일 HTML 프로토타입을 참고해 프론트엔드와 백엔드를 분리한 초기 구현이 들어 있습니다. 프론트엔드는 실시간 상담 화면과 브라우저 음성 처리를 담당하고, 백엔드는 비윤리 표현 판정과 GPT/Claude/fallback 기반 문맥 분석을 담당합니다.
-현재 로컬 `.env`에서 `OPENAI_API_KEY`와 `ANTHROPIC_API_KEY`가 모두 비어 있으면 외부 LLM은 호출되지 않으며, 응답의 `source`는 `fallback`으로 표시됩니다.
+생성 파일:
 
-## Roadmap
+```text
+backend/app/data/dictionaries.aihub.json
+```
 
-- [x] 프론트엔드/백엔드 프로젝트 구조 분리
-- [x] 욕설·성희롱 표현 사전 백엔드 모듈화
-- [x] GPT/Claude/fallback 기반 맥락 판단 API 구성
-- [x] 고성 감지 및 피치 시프팅 프론트엔드 모듈 구성
-- [x] 즉시 감지 경로와 3초 문맥 판단 경로 분리
-- [x] 정책 엔진 액션 응답 구조 구성
-- [x] 특이 민원 보고서 자동 생성 기능 구현
-- [ ] 상담 세션 로그 저장소 연동
-- [ ] PIP 상담 보조창 재구현
-- [ ] 상담사 보호 대시보드 고도화
+이 파일은 `.gitignore` 대상이다.
 
-## Team
+### KEMDy20 감정 메타데이터
 
-EMOTION GUARD 프로젝트 팀
+```powershell
+python scripts\extract_kemdy20_metadata.py KEMDy20_v1_3.zip
+```
+
+기본 출력:
+
+```text
+data/kemdy20/kemdy20_metadata.csv
+```
+
+### SKT 음성 감정 데이터
+
+현재 `SKT데이터/`는 원본 대용량 데이터 보관 위치이며 `.gitignore` 대상이다. small 데이터가 완성본으로 들어오면 압축을 푼 뒤 아래 명령으로 감정 분석용 CSV를 만든다.
+
+```powershell
+python scripts\extract_skt_emotion_metadata.py .\SKT데이터\extracted --output data\skt\skt_emotion_metadata.csv
+```
+
+현재 스크립트가 추출하는 주요 컬럼:
+
+- `audio_id`
+- `audio_path`
+- `emotion`
+- `transcript`
+- `duration_s`
+- `audio_rms`
+- `audio_peak`
+- `audio_zero_crossing_rate`
+- `spectral_centroid_hz`
+- `pitch_hz`
+- `pitch_confidence`
+
+## 프로젝트 구조
+
+```text
+.
+├─ backend/
+│  ├─ app/
+│  │  ├─ routers/
+│  │  │  ├─ analyze.py
+│  │  │  └─ transcribe.py
+│  │  ├─ services/
+│  │  │  ├─ local_classifier.py
+│  │  │  ├─ context_engine.py
+│  │  │  ├─ openai.py
+│  │  │  ├─ claude.py
+│  │  │  └─ policy_engine.py
+│  │  └─ data/
+│  │     └─ dictionaries.json
+│  └─ requirements.txt
+├─ frontend/
+│  └─ src/
+│     ├─ App.tsx
+│     ├─ lib/api.ts
+│     └─ lib/audio/jungle.ts
+├─ docs/
+├─ scripts/
+└─ package.json
+```
+
+## 판단 기준 요약
+
+- 비윤리 표현 사전에 명확히 걸리는 욕설/성희롱은 즉시 보호 경로에서 처리한다.
+- `시발점`, `시발역`, `시발지`처럼 오탐 가능성이 큰 표현은 예외 처리한다.
+- 애매한 표현은 3초 문맥 판단으로 넘긴다.
+- 음향 메타데이터는 감정/긴장도 보조 근거로만 사용하며, 단독으로 성희롱이나 폭언을 확정하지 않는다.
+- 피드백 루프도 약한 prior로만 사용한다. 현재 발화나 문맥 증거가 없는 경우에는 위험 판정을 만들지 않는다.
+
+## 현재 상태
+
+- 기본 시연 기능은 동작한다.
+- 실시간 단어 단위 삐 처리는 OpenAI STT 단어 타임스탬프 품질에 영향을 받는다.
+- 브라우저 Web Speech와 OpenAI 청크 STT를 함께 사용하므로 환경에 따라 받아쓰기 품질이 달라질 수 있다.
+- SKT 데이터셋 기반 감정 모델링은 아직 준비 단계다. 현재는 메타데이터 추출 스크립트와 피드백 루프 입력 계약까지 구현되어 있다.
+
+## 로드맵
+
+- [x] React/Vite 프론트엔드와 FastAPI 백엔드 분리
+- [x] 비윤리 표현 사전 기반 즉시 감지
+- [x] OpenAI STT 단어 타임스탬프 기반 삐 처리
+- [x] 3초 문맥 판단 경로
+- [x] 보고서 화면 `/report` 분리
+- [x] 피드백 루프 입력 계약 및 UI 표시
+- [x] SKT 감정 데이터셋 메타데이터 추출 준비
+- [ ] small SKT 데이터 압축 해제 후 실제 메타데이터 CSV 생성
+- [ ] 감정 분류 모델 학습 및 백엔드 추론 API 연결
+- [ ] 실제 콜센터 오디오 게이트웨이 연동 검증
