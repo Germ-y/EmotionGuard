@@ -9,7 +9,7 @@ app = FastAPI(title="EmotionGuard API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.cors_origin],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,4 +22,3 @@ async def health() -> dict[str, str | bool]:
 
 
 app.include_router(analyze_router)
-

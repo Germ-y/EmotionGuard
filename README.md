@@ -121,11 +121,11 @@ npm run dev:frontend
 
 기본 실행 주소는 다음과 같습니다.
 
-- Frontend: `http://localhost:4003`
+- Frontend: `http://127.0.0.1:4003`
 - Backend: `http://localhost:8000`
 - Health Check: `http://localhost:8000/health`
 
-프론트엔드 dev 서버는 발표 환경에서 포트가 바뀌지 않도록 `4003`에 고정되어 있습니다.
+프론트엔드 dev 서버는 발표 환경에서 포트가 바뀌지 않도록 `4003`에 고정되어 있습니다. 백엔드는 `localhost:4003`과 `127.0.0.1:4003`을 모두 CORS 허용합니다.
 
 ## Demo Mode
 
