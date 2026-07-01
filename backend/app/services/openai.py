@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.models import AnalysisResult, AudioFeatures
+from app.models import AnalysisResult, AudioFeatures, TranscribeResponse, TranscriptionWord
 from app.services.claude import ANALYST_SYSTEM, build_analysis_payload
 from app.services.local_classifier import conservative_fail
 
@@ -60,3 +60,45 @@ async def classify_with_openai(text: str, audio_features: AudioFeatures | None =
         return _coerce_openai_result(json.loads(match.group(0)))
     except Exception:
         return conservative_fail(text)
+
+
+async def transcribe_audio_with_openai(filename: str, content: bytes, content_type: str | None = None) -> TranscribeResponse:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"authorization": f"Bearer {settings.openai_api_key}"},
+            data=[
+                ("model", settings.openai_transcription_model),
+                ("language", "ko"),
+                ("response_format", "verbose_json"),
+                ("timestamp_granularities[]", "word"),
+            ],
+            files={
+                "file": (
+                    filename,
+                    content,
+                    content_type or "application/octet-stream",
+                )
+            },
+        )
+        response.raise_for_status()
+
+    data = response.json()
+    words = []
+    for item in data.get("words", []):
+        if not isinstance(item, dict):
+            continue
+        word = str(item.get("word", "")).strip()
+        if not word:
+            continue
+        try:
+            start = float(item.get("start", 0))
+            end = float(item.get("end", start))
+        except (TypeError, ValueError):
+            continue
+        words.append(TranscriptionWord(word=word, start=max(0, start), end=max(start, end)))
+
+    return TranscribeResponse(text=str(data.get("text", "")).strip(), words=words, source="openai")

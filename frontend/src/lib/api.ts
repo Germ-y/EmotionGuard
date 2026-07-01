@@ -34,6 +34,18 @@ export interface AnalyzeResponse {
   audioFeatures?: AudioFeatures | null;
 }
 
+export interface TranscriptionWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+export interface TranscribeResponse {
+  text: string;
+  words: TranscriptionWord[];
+  source: "openai" | "fallback";
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export async function analyzeUtterance(
@@ -54,4 +66,20 @@ export async function analyzeUtterance(
   }
 
   return response.json() as Promise<AnalyzeResponse>;
+}
+
+export async function transcribeAudioBlob(file: Blob, filename = "demo-audio.mp3"): Promise<TranscribeResponse> {
+  const formData = new FormData();
+  formData.append("file", file, filename);
+
+  const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Transcribe failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<TranscribeResponse>;
 }

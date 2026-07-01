@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnalysisMode, analyzeUtterance, AnalyzeResponse, AudioFeatures, EventType, PolicyAction } from "./lib/api";
+import {
+  AnalysisMode,
+  analyzeUtterance,
+  AnalyzeResponse,
+  AudioFeatures,
+  EventType,
+  PolicyAction,
+  transcribeAudioBlob,
+  TranscribeResponse,
+  TranscriptionWord,
+} from "./lib/api";
 import { Jungle } from "./lib/audio/jungle";
 
 type LogEntry = AnalyzeResponse & {
@@ -20,8 +30,17 @@ type DemoDialogueLine = {
   id: string;
   role: "상담사" | "고객" | "시스템";
   text: string;
+  detail?: string;
   tone?: "normal" | "risk" | "system";
   timestamp: string;
+};
+
+type DemoAudioKey = "parking-normal" | "abuse-profanity";
+
+type DemoAudioSpec = {
+  src: string;
+  transcript: string;
+  volume?: number;
 };
 
 type ConversationEntry = {
@@ -32,7 +51,6 @@ type ConversationEntry = {
   detail: string;
   tone: "normal" | "risk" | "system";
   eventType?: EventType;
-  original?: string;
 };
 
 type LatestDetectionView = {
@@ -127,7 +145,20 @@ const sourceLabel: Record<AnalyzeResponse["source"], string> = {
 
 const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
 const REPORT_ARCHIVE_LIMIT = 80;
-const MONITOR_GAIN = 0.72;
+const MONITOR_GAIN = 0.5;
+
+const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
+  "parking-normal": {
+    src: "/demo-audio/parking-normal.mp3",
+    transcript: "주차 단속 문자 받고 전화했어요. 이거 잘못된 것 같습니다.",
+    volume: 0.92,
+  },
+  "abuse-profanity": {
+    src: "/demo-audio/abuse-profanity.mp3",
+    transcript: "시발 뭐라는 거야",
+    volume: 0.92,
+  },
+};
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -261,6 +292,10 @@ function featureValue(value: number | undefined, suffix = "", voiceActivity = tr
   return value === undefined ? "계산중" : `${value}${suffix}`;
 }
 
+function normalizeSpeechWord(value: string) {
+  return value.toLowerCase().replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]/g, "");
+}
+
 function findTriggeredSpan(text: string, words: string[]) {
   const lowerText = text.toLowerCase();
   const matches = words
@@ -272,6 +307,76 @@ function findTriggeredSpan(text: string, words: string[]) {
     .sort((a, b) => a.index - b.index || b.length - a.length);
 
   return matches[0];
+}
+
+function wordTimestampSegments(words: TranscriptionWord[], triggeredWords: string[]) {
+  const normalizedTriggers = triggeredWords.map(normalizeSpeechWord).filter(Boolean);
+  if (normalizedTriggers.length === 0) return [];
+
+  const segments = words
+    .map((item) => {
+      const normalizedWord = normalizeSpeechWord(item.word);
+      const matched = normalizedTriggers.some((trigger) => normalizedWord.includes(trigger) || trigger.includes(normalizedWord));
+      if (!matched) return null;
+      return {
+        start: Math.max(0, item.start - CFG.beepPreRollMs / 1000),
+        end: item.end + CFG.beepPostRollMs / 1000,
+      };
+    })
+    .filter((item): item is { start: number; end: number } => Boolean(item))
+    .sort((a, b) => a.start - b.start);
+
+  return segments.reduce<Array<{ start: number; end: number }>>((merged, segment) => {
+    const last = merged.at(-1);
+    if (!last || segment.start > last.end + 0.05) {
+      merged.push(segment);
+    } else {
+      last.end = Math.max(last.end, segment.end);
+    }
+    return merged;
+  }, []);
+}
+
+function fallbackWordTimings(text: string): TranscriptionWord[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const duration = Math.max(0.9, words.join("").length * 0.12);
+  let cursor = 0;
+
+  return words.map((word) => {
+    const share = Math.max(0.18, duration * (Array.from(word).length / Math.max(1, text.replace(/\s/g, "").length)));
+    const timing = { word, start: cursor, end: cursor + share };
+    cursor += share + 0.06;
+    return timing;
+  });
+}
+
+function streamingTranscriptFrames(transcription: TranscribeResponse, fallbackText: string) {
+  const words = transcription.words.length > 0
+    ? transcription.words
+    : fallbackWordTimings(transcription.text || fallbackText);
+  const frames: Array<{ at: number; text: string; syllables: number }> = [];
+  let visible = "";
+  let syllables = 0;
+
+  words.forEach((wordTiming) => {
+    const characters = Array.from(wordTiming.word);
+    const wordDuration = Math.max(0.12, wordTiming.end - wordTiming.start);
+
+    characters.forEach((character, index) => {
+      const nextVisible = `${visible}${character}`;
+      syllables += /[가-힣]/.test(character) ? 1 : 0;
+      frames.push({
+        at: wordTiming.start + (wordDuration * (index + 1)) / Math.max(1, characters.length),
+        text: nextVisible.trim(),
+        syllables,
+      });
+      visible = nextVisible;
+    });
+
+    visible = `${visible} `;
+  });
+
+  return frames;
 }
 
 function beepDurationFor(result: AnalyzeResponse) {
@@ -412,7 +517,7 @@ export default function App() {
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
   const [gender, setGender] = useState<"male" | "female">("male");
-  const [monitorEnabled, setMonitorEnabled] = useState(false);
+  const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
@@ -442,6 +547,12 @@ export default function App() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const audioFeaturesRef = useRef<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
   const featureUiTsRef = useRef(0);
+  const demoAudioRef = useRef<{
+    ctx?: AudioContext;
+    sources: AudioBufferSourceNode[];
+    timers: number[];
+  }>({ sources: [], timers: [] });
+  const demoTranscriptionCacheRef = useRef<Partial<Record<DemoAudioKey, TranscribeResponse>>>({});
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -449,6 +560,8 @@ export default function App() {
     analyser?: AnalyserNode;
     jungle?: Jungle;
     outGain?: GainNode;
+    dryGain?: GainNode;
+    processedGain?: GainNode;
     raf?: number;
     raisedSustainMs: number;
     raisedLatched: boolean;
@@ -473,15 +586,17 @@ export default function App() {
     if (dialogue.length > 0) {
       return dialogue.map((line) => {
         const hidden = line.tone === "risk";
+        const safeText = line.text.includes("STT") || line.text.includes("삐") || line.text.includes("비공개")
+          ? line.text
+          : "삐 처리된 고객 발화";
         return {
           id: line.id,
           timestamp: line.timestamp,
           role: line.role,
-          text: hidden ? "삐 처리된 고객 발화" : line.text,
-          detail: hidden ? "원문 비공개 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화",
+          text: hidden ? safeText : line.text,
+          detail: line.detail ?? (hidden ? "원문 비공개 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화"),
           tone: line.tone ?? "normal",
           eventType: hidden ? "abuse" : undefined,
-          original: line.text,
         };
       });
     }
@@ -494,7 +609,6 @@ export default function App() {
       detail: `${eventLabel[log.eventType]} · ${pathLabel[log.detectionPath]} · ${log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[log.source]}`,
       tone: log.eventType === "normal" ? "normal" : "risk",
       eventType: log.eventType,
-      original: log.text,
     }));
   }, [demoDialogue, timelineEntries]);
 
@@ -524,11 +638,53 @@ export default function App() {
     text: string,
     tone: DemoDialogueLine["tone"] = "normal",
     timestamp = formatSessionTimestamp(sessionStartedAtRef.current, elapsed),
+    detail?: string,
   ) {
+    const id = crypto.randomUUID();
     setDemoDialogue((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), role, text, tone, timestamp },
+      { id, role, text, tone, timestamp, detail },
     ].slice(-80));
+    return id;
+  }
+
+  function updateDemoDialogue(id: string, patch: Partial<Omit<DemoDialogueLine, "id">>) {
+    setDemoDialogue((prev) => prev.map((line) => (line.id === id ? { ...line, ...patch } : line)));
+  }
+
+  function scheduleStreamingSttLine(
+    lineId: string,
+    transcription: TranscribeResponse,
+    fallbackText: string,
+    sensitive: boolean,
+  ) {
+    const frames = streamingTranscriptFrames(transcription, fallbackText).slice(0, 120);
+    const finalText = transcription.text || fallbackText;
+    const timers = frames.map((frame) => window.setTimeout(() => {
+      if (sensitive) {
+        const dots = "●".repeat(clamp(frame.syllables || frame.text.length, 1, 12));
+        updateDemoDialogue(lineId, {
+          text: `STT 수신 중 ${dots}`,
+          detail: `원문 비공개 · ${frame.syllables || frame.text.length}음절 처리`,
+        });
+        return;
+      }
+
+      updateDemoDialogue(lineId, {
+        text: frame.text,
+        detail: "STT 인터림 수신 중",
+      });
+    }, Math.max(0, frame.at * 1000)));
+
+    const finalAt = frames.at(-1)?.at ?? 0.8;
+    timers.push(window.setTimeout(() => {
+      updateDemoDialogue(lineId, {
+        text: sensitive ? "삐 처리된 고객 발화" : finalText,
+        detail: sensitive ? "원문 비공개 · 보호 오디오 출력 완료" : "STT 확정 발화",
+      });
+    }, Math.max(650, finalAt * 1000 + 160)));
+
+    demoAudioRef.current.timers.push(...timers);
   }
 
   useEffect(() => {
@@ -559,10 +715,10 @@ export default function App() {
     outGain.gain.setTargetAtTime(monitorEnabled ? MONITOR_GAIN : 0, ctx.currentTime, 0.03);
   }, [monitorEnabled]);
 
-  async function startAudio() {
+  async function startAudio(monitorOn = monitorEnabled) {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
     });
     const ctx = new AudioContextCtor();
     if (ctx.state === "suspended") await ctx.resume();
@@ -573,17 +729,27 @@ export default function App() {
     source.connect(analyser);
 
     const jungle = new Jungle(ctx);
-    const outputCursorDelay = ctx.createDelay(Math.max(3, CFG.outputDelay + 0.4));
+    const dryDelay = ctx.createDelay(Math.max(3, CFG.outputDelay + 0.4));
+    const processedDelay = ctx.createDelay(Math.max(3, CFG.outputDelay + 0.4));
+    const dryGain = ctx.createGain();
+    const processedGain = ctx.createGain();
     const outGain = ctx.createGain();
-    outputCursorDelay.delayTime.value = CFG.outputDelay;
-    outGain.gain.value = monitorEnabled ? MONITOR_GAIN : 0;
+    dryDelay.delayTime.value = CFG.outputDelay;
+    processedDelay.delayTime.value = CFG.outputDelay;
+    dryGain.gain.value = 1;
+    processedGain.gain.value = 0;
+    outGain.gain.value = monitorOn ? MONITOR_GAIN : 0;
 
+    source.connect(dryDelay);
+    dryDelay.connect(dryGain);
+    dryGain.connect(outGain);
     source.connect(jungle.input);
-    jungle.output.connect(outputCursorDelay);
-    outputCursorDelay.connect(outGain);
+    jungle.output.connect(processedDelay);
+    processedDelay.connect(processedGain);
+    processedGain.connect(outGain);
     outGain.connect(ctx.destination);
 
-    audioRef.current = { ...audioRef.current, stream, ctx, analyser, jungle, outGain };
+    audioRef.current = { ...audioRef.current, stream, ctx, analyser, jungle, outGain, dryGain, processedGain };
     runMeter();
   }
 
@@ -643,6 +809,11 @@ export default function App() {
       }
 
       current.jungle.setPitchOffset(offset);
+      if (current.dryGain && current.processedGain && current.ctx) {
+        const processedMix = offset < 0 ? 0.85 : 0;
+        current.dryGain.gain.setTargetAtTime(1 - processedMix, current.ctx.currentTime, 0.04);
+        current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
+      }
 
       if (!announcingRef.current && nextLevel >= threshold) {
         current.raisedSustainMs += dt;
@@ -686,6 +857,80 @@ export default function App() {
       oscillator.disconnect();
       beepGain.disconnect();
     };
+  }
+
+  function stopDemoAudio() {
+    demoAudioRef.current.sources.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // 이미 종료된 데모 소스는 무시합니다.
+      }
+    });
+    demoAudioRef.current.timers.forEach((timer) => window.clearTimeout(timer));
+    void demoAudioRef.current.ctx?.close();
+    demoAudioRef.current = { sources: [], timers: [] };
+  }
+
+  async function transcribeDemoAudio(key: DemoAudioKey) {
+    const cached = demoTranscriptionCacheRef.current[key];
+    if (cached) return cached;
+
+    const spec = demoAudioSpecs[key];
+    const response = await fetch(spec.src);
+    if (!response.ok) throw new Error(`Demo audio fetch failed: ${response.status}`);
+    const blob = await response.blob();
+    const transcription = await transcribeAudioBlob(blob, `${key}.mp3`);
+    demoTranscriptionCacheRef.current[key] = transcription;
+    return transcription;
+  }
+
+  async function playDemoAudio(key: DemoAudioKey, beepSegments: Array<{ start: number; end: number }> = []) {
+    stopDemoAudio();
+    const spec = demoAudioSpecs[key];
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioContextCtor();
+    if (ctx.state === "suspended") await ctx.resume();
+
+    const response = await fetch(spec.src);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    const startAt = ctx.currentTime + 0.06;
+    const volume = spec.volume ?? 0.9;
+
+    source.buffer = audioBuffer;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(volume, startAt);
+
+    beepSegments.forEach((segment) => {
+      const segmentStart = startAt + Math.max(0, segment.start);
+      const segmentEnd = startAt + Math.max(segment.start + 0.08, segment.end);
+      const pre = Math.max(startAt, segmentStart - 0.025);
+      const post = segmentEnd + 0.035;
+
+      gain.gain.setValueAtTime(volume, pre);
+      gain.gain.linearRampToValueAtTime(0.0001, segmentStart);
+      gain.gain.setValueAtTime(0.0001, segmentEnd);
+      gain.gain.linearRampToValueAtTime(volume, post);
+      playBeep(ctx, segmentStart, Math.max(180, (segmentEnd - segmentStart) * 1000));
+    });
+
+    source.start(startAt);
+    source.onended = () => {
+      source.disconnect();
+      gain.disconnect();
+    };
+
+    const closeTimer = window.setTimeout(() => {
+      void ctx.close();
+      if (demoAudioRef.current.ctx === ctx) demoAudioRef.current = { sources: [], timers: [] };
+    }, audioBuffer.duration * 1000 + 700);
+
+    demoAudioRef.current = { ctx, sources: [source], timers: [closeTimer] };
+    return audioBuffer.duration * 1000;
   }
 
   function estimateBeepStart(result: AnalyzeResponse, text: string, timing: SpeechTiming | undefined, ctx: AudioContext) {
@@ -978,12 +1223,24 @@ export default function App() {
       text: string,
       seconds: number,
       tone: DemoDialogueLine["tone"] = "normal",
+      audioKey?: DemoAudioKey,
     ) => {
       markDemoPhase("input");
       setLevel(tone === "risk" ? 48 : 18);
       setStatus(role === "상담사" ? "상담사 발화 지연 없이 전달" : "고객 음성 입력");
-      pushDemoDialogue(role, text, tone, stamp(seconds));
-      await sleep(620);
+      let spokenText = text;
+      if (audioKey) {
+        setDemoStep("고객 음성 파일을 STT로 변환한 뒤 재생 시간에 맞춰 인터림을 표시합니다.");
+        const transcription = await transcribeDemoAudio(audioKey);
+        spokenText = transcription.text || text;
+        const lineId = pushDemoDialogue(role, "STT 수신 대기", tone, stamp(seconds), "음성 파일 분석 완료 · 재생 대기");
+        const playbackMs = await playDemoAudio(audioKey);
+        scheduleStreamingSttLine(lineId, transcription, spokenText, tone === "risk");
+        await sleep(clamp(playbackMs + 240, 900, 3600));
+        return;
+      }
+      pushDemoDialogue(role, spokenText, tone, stamp(seconds));
+      await sleep(audioKey ? 1300 : 620);
     };
     const riskTurn = async (options: {
       text: string;
@@ -994,20 +1251,50 @@ export default function App() {
       stage: number;
       maskStatus: string;
       systemText: string;
+      audioKey?: DemoAudioKey;
     }) => {
       markDemoPhase("input");
       setLevel(options.level);
       setStatus("고객 음성 입력");
-      pushDemoDialogue("고객", options.text, "risk", stamp(options.seconds));
+      let spokenText = options.text;
+      let transcription: TranscribeResponse | null = null;
+      let lineId: string | null = null;
+      if (options.audioKey) {
+        setDemoStep("고객 음성 파일을 STT로 변환하고 단어 타임스탬프를 추출합니다.");
+        transcription = await transcribeDemoAudio(options.audioKey);
+        spokenText = transcription.text || options.text;
+        lineId = pushDemoDialogue(
+          "고객",
+          "STT 수신 대기",
+          "risk",
+          stamp(options.seconds),
+          "원문 비공개 · 단어 타임스탬프 대기",
+        );
+      } else {
+        pushDemoDialogue("고객", spokenText, "risk", stamp(options.seconds));
+      }
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
-      await sleep(520);
+      await sleep(options.audioKey ? 260 : 520);
 
       markDemoPhase("detect");
       setStatus(options.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
       setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "로컬 사전 감지: 위험 단어 구간 확인");
-      await analyzeDemo(options.text, options.raised, "immediate");
+      const immediateResult = await analyzeDemo(spokenText, options.raised, "immediate");
       setEscalationStage(options.stageKind, options.stage);
-      await sleep(620);
+      const beepSegments = transcription
+        ? wordTimestampSegments(transcription.words, immediateResult.triggeredWords)
+        : [];
+      if (options.audioKey && immediateResult.policyActions.includes("mute") && beepSegments.length === 0) {
+        setError("STT 단어 타임스탬프에서 욕설 구간을 찾지 못했습니다. 원본 음성은 재생하지 않습니다.");
+        return;
+      }
+      if (options.audioKey) {
+        const playbackMs = await playDemoAudio(options.audioKey, beepSegments);
+        if (lineId) scheduleStreamingSttLine(lineId, transcription!, spokenText, true);
+        await sleep(clamp(playbackMs + 260, 900, 3600));
+      } else {
+        await sleep(620);
+      }
 
       markDemoPhase("mask");
       setStatus(options.maskStatus);
@@ -1017,7 +1304,7 @@ export default function App() {
       markDemoPhase("context");
       setStatus("GPT 문맥 판단 요청 중");
       setDemoStep("3초 문맥 스냅샷을 정책 엔진에 반영합니다.");
-      await analyzeDemo(options.text, false, "context_snapshot");
+      await analyzeDemo(spokenText, false, "context_snapshot");
       await sleep(520);
     };
 
@@ -1071,12 +1358,13 @@ export default function App() {
         text: "시발 뭐하는 거야",
         level: 34,
         raised: false,
+        audioKey: "abuse-profanity" as const,
         title: "욕설 구간 삐 처리 데모",
         setup: [
           ["상담사", "서울시 120다산콜센터입니다. 어떤 내용을 도와드릴까요?"],
-          ["고객", "주차 단속 문자 받고 전화했어요. 이거 잘못된 것 같습니다."],
+          ["고객", "주차 단속 문자 받고 전화했어요. 이거 잘못된 것 같습니다.", "parking-normal"],
           ["상담사", "차량번호와 단속 위치를 확인한 뒤 안내드리겠습니다."],
-        ] as Array<[DemoDialogueLine["role"], string]>,
+        ] as Array<[DemoDialogueLine["role"], string, DemoAudioKey?]>,
         systemText: "욕설 단어 구간만 삐 처리하고 1단계 경고를 기록했습니다.",
         maskStatus: "욕설 구간 삐 처리",
         stageKind: "abuse" as const,
@@ -1090,7 +1378,7 @@ export default function App() {
           ["상담사", "복지 서비스 신청 절차 안내드리겠습니다."],
           ["고객", "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요."],
           ["상담사", "민원 내용 중심으로 안내드리겠습니다."],
-        ] as Array<[DemoDialogueLine["role"], string]>,
+        ] as Array<[DemoDialogueLine["role"], string, DemoAudioKey?]>,
         systemText: "성희롱 가능 발언으로 경고 기록과 증빙 로그를 준비했습니다.",
         maskStatus: "성희롱 경고 기록 및 증빙 로그",
         stageKind: "sexual" as const,
@@ -1104,7 +1392,7 @@ export default function App() {
           ["상담사", "상수도 요금 문의 접수 도와드리겠습니다."],
           ["고객", "지난달보다 요금이 많이 나왔습니다. 확인해주세요."],
           ["상담사", "검침 내역과 감면 적용 여부를 차례로 확인하겠습니다."],
-        ] as Array<[DemoDialogueLine["role"], string]>,
+        ] as Array<[DemoDialogueLine["role"], string, DemoAudioKey?]>,
         systemText: "고성 구간의 피치와 볼륨을 낮춰 상담사에게 전달했습니다.",
         maskStatus: "고성 구간 피치/볼륨 완화",
         stageKind: "abuse" as const,
@@ -1113,9 +1401,9 @@ export default function App() {
 
     try {
       setDemoStep(`${script.title}: 실제 상담 예시 시작`);
-      await say(script.setup[0][0], script.setup[0][1], 1);
-      await say(script.setup[1][0], script.setup[1][1], 3);
-      await say(script.setup[2][0], script.setup[2][1], 5);
+      await say(script.setup[0][0], script.setup[0][1], 1, "normal", script.setup[0][2]);
+      await say(script.setup[1][0], script.setup[1][1], 3, "normal", script.setup[1][2]);
+      await say(script.setup[2][0], script.setup[2][1], 5, "normal", script.setup[2][2]);
       await riskTurn({
         text: script.text,
         seconds: 8,
@@ -1125,6 +1413,7 @@ export default function App() {
         stage: 1,
         maskStatus: script.maskStatus,
         systemText: script.systemText,
+        audioKey: "audioKey" in script ? script.audioKey : undefined,
       });
       if (type === "sexual") setEscalationStage("sexual", 2);
 
@@ -1258,10 +1547,11 @@ export default function App() {
     sessionStartedAtRef.current = new Date();
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+    setMonitorEnabled(true);
     setActive(true);
 
     try {
-      await startAudio();
+      await startAudio(true);
       startRecognition();
       speak("안녕하세요. 원활한 상담을 위해 통화 내용이 녹음됩니다.");
       audioRef.current.timer = window.setInterval(() => setElapsed((prev) => prev + 1), 1000);
@@ -1419,7 +1709,7 @@ export default function App() {
             <div className="conversation-list" ref={timelineRef}>
               {conversationEntries.length === 0 && <p className="empty">고객 발화가 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
               {conversationEntries.map((entry) => (
-                <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.eventType ?? ""}`} data-original={entry.original}>
+                <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.eventType ?? ""}`}>
                   <time>[{entry.timestamp}]</time>
                   <b>{entry.role === "시스템" ? "보호 조치" : entry.role}</b>
                   <div>

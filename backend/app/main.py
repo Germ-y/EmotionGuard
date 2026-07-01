@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers.analyze import router as analyze_router
+from app.routers.transcribe import router as transcribe_router
 
 
 app = FastAPI(title="EmotionGuard API", version="0.1.0")
@@ -22,3 +23,4 @@ async def health() -> dict[str, str | bool]:
 
 
 app.include_router(analyze_router)
+app.include_router(transcribe_router)

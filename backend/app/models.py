@@ -51,3 +51,15 @@ class AnalyzeResponse(AnalysisResult):
     contextWindowMs: int
     policyActions: list[PolicyAction]
     audioFeatures: AudioFeatures | None = None
+
+
+class TranscriptionWord(BaseModel):
+    word: str
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+
+class TranscribeResponse(BaseModel):
+    text: str
+    words: list[TranscriptionWord] = Field(default_factory=list)
+    source: Literal["openai", "fallback"] = "openai"
