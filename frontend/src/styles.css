@@ -110,42 +110,74 @@ button:hover { transform: translateY(-1px); }
 }
 
 .process-strip {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
-  margin: 14px 0 12px;
+  gap: 0;
+  margin: 12px 0 12px;
+  padding: 14px 18px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow-sm);
+}
+.process-strip::before {
+  content: "";
+  position: absolute;
+  top: 25px;
+  left: 52px;
+  right: 52px;
+  height: 2px;
+  border-radius: 999px;
+  background: #d8e0ea;
 }
 .process-step {
   position: relative;
-  min-height: 44px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 10px 12px 10px 14px;
-  overflow: hidden;
+  min-height: 52px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 30px 4px 0;
+  overflow: visible;
+  text-align: center;
 }
 .process-step::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
+  z-index: 1;
+  top: 3px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  border: 3px solid #cbd5e1;
+  border-radius: 999px;
   background: #cbd5e1;
+  transform: translateX(-50%);
 }
 .process-step.done {
-  border-color: #bfd0f7;
-  background: #f6f8fb;
+  background: transparent;
 }
-.process-step.done::before { background: var(--blue); }
+.process-step.done::before {
+  border-color: var(--blue);
+  background: var(--blue);
+  box-shadow: 0 0 0 4px rgba(29, 78, 216, 0.08);
+}
 .process-step.active {
-  border-color: #95b6ff;
-  background: var(--blue-soft);
-  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.1), var(--shadow-sm);
+  background: transparent;
+  box-shadow: none;
 }
-.process-step.active::before { background: var(--blue); }
+.process-step.active::before {
+  border-color: var(--blue);
+  background: var(--blue);
+  box-shadow: 0 0 0 6px rgba(29, 78, 216, 0.12);
+}
 .process-step strong {
   display: block;
+  color: var(--muted);
   font-size: 12px;
 }
+.process-step.active strong { color: var(--text); }
+.process-step.done strong { color: var(--text); }
 .process-step span {
   display: none;
   color: var(--muted);
@@ -667,7 +699,10 @@ h2 { margin: 0 0 10px; font-size: 14px; }
   .app { width: min(100% - 24px, 1280px); padding-top: 12px; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .architecture-strip { grid-template-columns: repeat(2, 1fr); }
-  .process-strip { grid-template-columns: 1fr; }
+  .process-strip {
+    grid-template-columns: repeat(5, minmax(72px, 1fr));
+    overflow-x: auto;
+  }
   .stage-grid { grid-template-columns: 1fr; }
   .pipeline { grid-template-columns: 1fr; }
   .live-compare { grid-template-columns: 1fr; }
