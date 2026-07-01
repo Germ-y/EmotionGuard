@@ -355,6 +355,33 @@ function compactTranscriptText(value: string) {
     .replace(/[.,!?~…'"“”‘’]/g, "");
 }
 
+function commonPrefixLength(left: string, right: string) {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) index += 1;
+  return index;
+}
+
+function transcriptsLookRelated(left: string, right: string, minLength = 8) {
+  const compactLeft = compactTranscriptText(left);
+  const compactRight = compactTranscriptText(right);
+  if (!compactLeft || !compactRight) return false;
+  if (compactLeft === compactRight) return true;
+
+  const [shorter, longer] = compactLeft.length <= compactRight.length
+    ? [compactLeft, compactRight]
+    : [compactRight, compactLeft];
+
+  if (shorter.length >= minLength && longer.includes(shorter)) return true;
+
+  const prefixLength = commonPrefixLength(compactLeft, compactRight);
+  if (prefixLength >= Math.min(18, shorter.length) && prefixLength / Math.max(1, shorter.length) >= 0.7) {
+    return true;
+  }
+
+  return false;
+}
+
 function sanitizeTranscriptText(value: string) {
   return value
     .replace(/이전 상담 문맥\s*:\s*/g, "")
@@ -522,9 +549,63 @@ function sensitiveWordsForResult(text: string, result: AnalyzeResponse) {
 }
 
 function withDisplayMask(result: AnalyzeResponse, text: string) {
-  if (result.eventType === "normal") return result;
-  const maskedText = maskTextByWords(result.maskedText, sensitiveWordsForResult(text, result));
+  const displaySource = result.detectionPath === "context_snapshot" && text.trim()
+    ? text
+    : result.maskedText || text;
+  if (result.eventType === "normal") return { ...result, maskedText: displaySource };
+  const maskedText = maskTextByWords(displaySource, sensitiveWordsForResult(displaySource, result));
   return maskedText === result.maskedText ? result : { ...result, maskedText };
+}
+
+function uniqueValues<T extends string>(items: T[]) {
+  return Array.from(new Set(items));
+}
+
+function logTextScore(log: LogEntry) {
+  const text = sanitizeTranscriptText(log.maskedText || log.text);
+  const length = compactTranscriptText(text).length;
+  const runawayPenalty = Math.max(0, length - 220) * 2;
+  return (
+    (log.detectionPath === "immediate" ? 1000 : 0) +
+    (log.eventType !== "normal" ? 150 : 0) +
+    Math.min(length, 180) -
+    runawayPenalty
+  );
+}
+
+function bestLogText(logs: LogEntry[]) {
+  const best = logs
+    .slice()
+    .sort((left, right) => logTextScore(right) - logTextScore(left))[0];
+  return sanitizeTranscriptText(best?.maskedText || best?.text || "");
+}
+
+function eventRank(eventType: EventType) {
+  return {
+    normal: 0,
+    raised: 1,
+    abuse: 2,
+    "abuse-raised": 3,
+    sexual: 4,
+  }[eventType];
+}
+
+function severityRank(severity: AnalyzeResponse["severity"]) {
+  return { none: 0, mild: 1, severe: 2 }[severity];
+}
+
+function bestLogJudgement(logs: LogEntry[]) {
+  return logs
+    .slice()
+    .sort((left, right) => {
+      const eventDiff = eventRank(right.eventType) - eventRank(left.eventType);
+      if (eventDiff) return eventDiff;
+      const severityDiff = severityRank(right.severity) - severityRank(left.severity);
+      if (severityDiff) return severityDiff;
+      const pathDiff = (right.detectionPath === "immediate" ? 1 : 0) - (left.detectionPath === "immediate" ? 1 : 0);
+      if (pathDiff) return pathDiff;
+      return logTextScore(right) - logTextScore(left);
+    })[0];
 }
 
 function fallbackWordTimings(text: string): TranscriptionWord[] {
@@ -1304,26 +1385,31 @@ export default function App() {
       timestamp: currentSessionTimestamp(),
     };
 
-    const compactEntry = compactTranscriptText(entry.maskedText);
-    const mergeTargets = logsRef.current.slice(0, 10).filter((candidate) => {
-      if (candidate.eventType !== entry.eventType) return false;
-      const compactCandidate = compactTranscriptText(candidate.maskedText);
-      if (compactEntry.length < 8 || compactCandidate.length < 6) return false;
-      return compactEntry.includes(compactCandidate) || compactCandidate.includes(compactEntry);
+    const mergeTargets = logsRef.current.slice(0, 20).filter((candidate) => {
+      const compatibleEvent =
+        candidate.eventType === entry.eventType ||
+        candidate.eventType === "normal" ||
+        entry.eventType === "normal";
+      if (!compatibleEvent) return false;
+      return transcriptsLookRelated(candidate.maskedText || candidate.text, entry.maskedText || entry.text);
     });
 
     if (mergeTargets.length > 0) {
       const targetIds = new Set(mergeTargets.map((item) => item.id));
       const anchor = mergeTargets.at(-1) ?? mergeTargets[0];
-      const longestTarget = mergeTargets.reduce((longest, item) => (
-        compactTranscriptText(item.maskedText).length > compactTranscriptText(longest.maskedText).length ? item : longest
-      ), mergeTargets[0]);
-      const mergedBase = compactEntry.length >= compactTranscriptText(longestTarget.maskedText).length ? entry : longestTarget;
+      const candidates = [entry, ...mergeTargets];
+      const mergedBase = bestLogJudgement(candidates) ?? entry;
+      const mergedText = maskVisibleText(bestLogText(candidates) || entry.maskedText || entry.text);
       const merged = {
         ...mergedBase,
         id: anchor.id,
         time: anchor.time,
         timestamp: anchor.timestamp,
+        categories: uniqueValues(candidates.flatMap((item) => item.categories)),
+        triggeredWords: uniqueValues(candidates.flatMap((item) => item.triggeredWords)),
+        policyActions: uniqueValues(candidates.flatMap((item) => item.policyActions)),
+        maskedText: mergedText,
+        text: mergedText,
       };
       const nextLogs = [merged, ...logsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
       const nextReportLogs = [merged, ...reportLogsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
@@ -1531,7 +1617,10 @@ export default function App() {
     try {
       const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features);
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
-      applyPolicy(result, clean, timing, {
+      const displayText = analysisMode === "context_snapshot"
+        ? contextBufferRef.current.at(-1) ?? clean
+        : clean;
+      applyPolicy(result, displayText, timing, {
         logNormal: Boolean(options.logNormal),
         deferLog: Boolean(options.interim),
         skipEscalation: Boolean(options.interim),
@@ -1963,6 +2052,17 @@ export default function App() {
       return;
     }
     if (last && compactLast.includes(compactClean) && compactClean.length > 8) return;
+    const relatedIndex = contextBufferRef.current.findIndex((item) => transcriptsLookRelated(item, clean));
+    if (relatedIndex >= 0) {
+      const existing = contextBufferRef.current[relatedIndex];
+      const replacement = compactTranscriptText(clean).length >= compactTranscriptText(existing).length ? clean : existing;
+      contextBufferRef.current = [
+        ...contextBufferRef.current.slice(0, relatedIndex),
+        replacement,
+        ...contextBufferRef.current.slice(relatedIndex + 1),
+      ].slice(-8);
+      return;
+    }
     contextBufferRef.current.push(clean);
     contextBufferRef.current = contextBufferRef.current.slice(-8);
   }
