@@ -97,17 +97,18 @@ const CFG = {
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
-  voiceLevelThreshold: 0.7,
-  voicePeakThreshold: 0.004,
-  voiceHoldMs: 520,
+  voiceLevelThreshold: 0.35,
+  voicePeakThreshold: 0.002,
+  voiceHoldMs: 1200,
   interimDebounceMs: 90,
   recognitionRestartMs: 220,
   liveChunkMs: 1600,
   liveChunkMaxInflight: 3,
-  liveChunkMinBytes: 700,
-  liveChunkVoiceWindowMs: 2200,
-  liveChunkMinLevel: 0.8,
-  liveChunkMinPeak: 0.004,
+  liveChunkMinBytes: 450,
+  liveChunkVoiceWindowMs: 5200,
+  liveChunkMinLevel: 0.35,
+  liveChunkMinPeak: 0.002,
+  liveChunkProbeEveryMs: 2800,
   normalRepeatDedupeMs: 10000,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
@@ -703,7 +704,11 @@ export default function App() {
     timers: number[];
   }>({ sources: [], timers: [] });
   const demoTranscriptionCacheRef = useRef<Partial<Record<DemoAudioKey, TranscribeResponse>>>({});
-  const liveChunkRef = useRef<{ enabled: boolean; inFlight: number; timer?: number }>({ enabled: false, inFlight: 0 });
+  const liveChunkRef = useRef<{ enabled: boolean; inFlight: number; timer?: number; lastProbeTs: number }>({
+    enabled: false,
+    inFlight: 0,
+    lastProbeTs: 0,
+  });
   const lastNormalTranscriptRef = useRef<{ text: string; at: number } | null>(null);
 
   const audioRef = useRef<{
@@ -1415,7 +1420,11 @@ export default function App() {
       const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`, dictationPrompt());
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const clean = (transcription.text || "").trim();
-      if (!clean) return;
+      if (!clean) {
+        setLiveTranscript("");
+        setStatus("음성 입력 대기 중");
+        return;
+      }
       const displayText = recentBrowserDictation() || clean;
       const openAiVisibleDictation = !browserDictationRef.current;
       if (openAiVisibleDictation) setLiveTranscript(clean);
@@ -1441,7 +1450,10 @@ export default function App() {
       if (result.eventType === "normal") {
         lastNormalTranscriptRef.current = { text: normalizedClean, at: Date.now() };
       }
-      if (repeatedNormal) return;
+      if (repeatedNormal) {
+        setStatus("음성 입력 대기 중");
+        return;
+      }
       pushContext(clean);
       if (result.eventType === "normal") {
         if (openAiVisibleDictation) {
@@ -1485,17 +1497,21 @@ export default function App() {
     const recordOnce = () => {
       if (!liveChunkRef.current.enabled) return;
       const currentFeatures = audioFeaturesRef.current;
-      const hasRecentVoice = Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs;
+      const now = Date.now();
+      const hasRecentVoice = now - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs;
       const hasEnoughLevel =
         (currentFeatures.rmsPercent ?? 0) >= CFG.liveChunkMinLevel || (currentFeatures.peak ?? 0) >= CFG.liveChunkMinPeak;
-      if (!hasRecentVoice || !hasEnoughLevel) {
-        scheduleNext(240);
+      const hasInputHint = hasRecentVoice || hasEnoughLevel;
+      const shouldProbe = !hasInputHint && now - liveChunkRef.current.lastProbeTs >= CFG.liveChunkProbeEveryMs;
+      if (!hasInputHint && !shouldProbe) {
+        scheduleNext(180);
         return;
       }
       if (liveChunkRef.current.inFlight >= CFG.liveChunkMaxInflight) {
         scheduleNext(240);
         return;
       }
+      if (shouldProbe) liveChunkRef.current.lastProbeTs = now;
 
       const chunks: Blob[] = [];
       const chunkStartedAtMs = performance.now();
@@ -1519,7 +1535,7 @@ export default function App() {
         if (
           runId === sessionRunIdRef.current &&
           blob.size >= CFG.liveChunkMinBytes &&
-          Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs
+          (hasInputHint || shouldProbe)
         ) {
           void processLiveAudioChunk(blob, chunkStartedAtMs, runId);
         }
@@ -1537,7 +1553,7 @@ export default function App() {
       }, CFG.liveChunkMs);
     };
 
-    liveChunkRef.current = { enabled: true, inFlight: 0 };
+    liveChunkRef.current = { enabled: true, inFlight: 0, lastProbeTs: Date.now() };
     scheduleNext(0);
     setStatus("OpenAI 받아쓰기 청크 대기 중");
     setDemoStep("라이브 음성을 짧은 청크로 STT하고 단어 타임스탬프로 삐 처리합니다.");
@@ -1998,7 +2014,7 @@ export default function App() {
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
-    liveChunkRef.current = { enabled: false, inFlight: 0 };
+    liveChunkRef.current = { enabled: false, inFlight: 0, lastProbeTs: 0 };
     lastNormalTranscriptRef.current = null;
     lastBrowserDictationRef.current = null;
     interimCheckRef.current.lastText = "";
