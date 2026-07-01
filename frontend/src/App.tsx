@@ -16,6 +16,13 @@ type SpeechTiming = {
 
 type DemoPhase = "idle" | "input" | "detect" | "mask" | "context" | "policy";
 
+type DemoDialogueLine = {
+  id: string;
+  role: "상담사" | "고객" | "시스템";
+  text: string;
+  tone?: "normal" | "risk" | "system";
+};
+
 type EscalationState = {
   abuse: number;
   sexual: number;
@@ -86,7 +93,7 @@ const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   local: "로컬 사전",
   openai: "GPT API",
   claude: "Claude API",
-  fallback: "Fallback(LLM 비활성)",
+  fallback: "기본 문맥 엔진",
 };
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -95,7 +102,7 @@ const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> 
   { id: "input", label: "음성 입력", detail: "20ms Frame" },
   { id: "detect", label: "빠른 감지", detail: "RMS/STT/로컬 사전" },
   { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
-  { id: "context", label: "3초 맥락", detail: "GPT/Claude/fallback" },
+  { id: "context", label: "3초 맥락", detail: "GPT/Claude/로컬 문맥" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
 
@@ -192,6 +199,7 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [status, setStatus] = useState("대기 중");
   const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
+  const [demoDialogue, setDemoDialogue] = useState<DemoDialogueLine[]>([]);
   const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
   const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
@@ -249,6 +257,13 @@ export default function App() {
       return;
     }
     setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
+  }
+
+  function pushDemoDialogue(role: DemoDialogueLine["role"], text: string, tone: DemoDialogueLine["tone"] = "normal") {
+    setDemoDialogue((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), role, text, tone },
+    ].slice(-8));
   }
 
   useEffect(() => {
@@ -486,9 +501,11 @@ export default function App() {
       if (result.policyActions.includes("mute")) beepProfanitySegment(result, text, timing);
       if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
     } else if (result.eventType !== "normal") {
-      setStatus(`${sourceLabel[result.source]} 문맥 판단: ${eventLabel[result.eventType]}`);
+      const engine = result.source === "openai" ? "GPT" : result.source === "claude" ? "Claude" : "문맥 엔진";
+      setStatus(`${engine} 판단: ${eventLabel[result.eventType]}`);
     } else {
-      setStatus(`${sourceLabel[result.source]} 문맥 판단 완료`);
+      const engine = result.source === "openai" ? "GPT" : result.source === "claude" ? "Claude" : "3초 문맥";
+      setStatus(`${engine} 판단 완료`);
     }
 
     if (!logged || !result.policyActions.includes("warn_tts")) return;
@@ -607,6 +624,61 @@ export default function App() {
 
   async function runDemo(type: "abuse" | "sexual" | "raised" | "escalation") {
     if (active) stopSession();
+    const setDemoClock = (seconds: number) => {
+      setElapsed(seconds);
+      sessionStartedAtRef.current = new Date(Date.now() - seconds * 1000);
+    };
+    const say = async (
+      role: DemoDialogueLine["role"],
+      text: string,
+      seconds: number,
+      tone: DemoDialogueLine["tone"] = "normal",
+    ) => {
+      setDemoClock(seconds);
+      markDemoPhase("input");
+      setLevel(tone === "risk" ? 48 : 18);
+      setStatus(role === "상담사" ? "상담사 발화 지연 없이 전달" : "고객 음성 입력");
+      pushDemoDialogue(role, text, tone);
+      await sleep(620);
+    };
+    const riskTurn = async (options: {
+      text: string;
+      seconds: number;
+      level: number;
+      raised: boolean;
+      stageKind: keyof EscalationState;
+      stage: number;
+      maskStatus: string;
+      systemText: string;
+    }) => {
+      setDemoClock(options.seconds);
+      markDemoPhase("input");
+      setLevel(options.level);
+      setStatus("고객 음성 입력");
+      pushDemoDialogue("고객", options.text, "risk");
+      setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
+      await sleep(520);
+
+      markDemoPhase("detect");
+      setStatus(options.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
+      setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "로컬 사전 감지: 위험 단어 구간 확인");
+      await analyzeDemo(options.text, options.raised, "immediate");
+      setEscalationStage(options.stageKind, options.stage);
+      await sleep(620);
+
+      markDemoPhase("mask");
+      setStatus(options.maskStatus);
+      pushDemoDialogue("시스템", options.systemText, "system");
+      await sleep(620);
+
+      setDemoClock(options.seconds + 3);
+      markDemoPhase("context");
+      setStatus("GPT 문맥 판단 요청 중");
+      setDemoStep("3초 문맥 스냅샷을 정책 엔진에 반영합니다.");
+      await analyzeDemo(options.text, false, "context_snapshot");
+      await sleep(520);
+    };
+
     setError("");
     setLogs([]);
     logsRef.current = [];
@@ -620,46 +692,47 @@ export default function App() {
     setMuted(false);
     setReport(null);
     setCopyStatus("");
-    sessionStartedAtRef.current = new Date();
+    setDemoDialogue([]);
+    setDemoClock(0);
     markDemoPhase("idle");
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
 
     if (type === "escalation") {
-      const lines = [
-        "시발 뭐하는 거야",
-        "개새끼 당장 바꿔",
-        "병신같이 처리하네",
-        "좆같네 꺼져",
+      const lines: Array<{ text: string; level: number }> = [
+        { text: "시발 뭐하는 거야. 담당자 바꿔.", level: 44 },
+        { text: "개새끼야 당장 해결하라고.", level: 52 },
+        { text: "병신같이 처리하네. 찾아가면 되냐?", level: 64 },
+        { text: "좆같네, 더 못 기다려. 끊기 전에 해결해.", level: 78 },
       ];
 
       try {
-        setDemoStep("폭언/고성 4단계 상승 데모: 반복 위험 이벤트 입력");
+        setDemoStep("폭언/고성 4단계 상승 데모: 실제 상담 흐름 시작");
+        await say("상담사", "서울시 120다산콜센터입니다. 어떤 민원으로 전화주셨을까요?", 1);
+        await say("고객", "민원 접수했는데 며칠째 답이 없어서 전화했습니다.", 3);
+        await say("상담사", "접수번호 확인 후 처리 부서 진행 상황을 안내드리겠습니다.", 5);
         for (let index = 0; index < lines.length; index += 1) {
           const stage = index + 1;
-          const text = lines[index];
-          markDemoPhase("input");
-          setInterimText(text);
-          setLevel(42 + stage * 9);
-          setDemoStep(`${stage}단계 진입: 고객 발화 입력`);
-          setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
-          await sleep(420);
-
-          markDemoPhase("detect");
-          setDemoStep(`${stage}단계 진입: 로컬 욕설 사전 감지`);
-          await analyzeDemo(text, stage >= 3, "immediate");
-          setEscalationStage("abuse", stage);
-          await sleep(620);
-
-          markDemoPhase("mask");
-          setDemoStep(`${stage}단계 진입: 욕설 단어 구간 비프음 마스크 적용`);
-          await sleep(520);
+          const item = lines[index];
+          await riskTurn({
+            text: item.text,
+            seconds: 7 + index * 4,
+            level: item.level,
+            raised: stage >= 3,
+            stageKind: "abuse",
+            stage,
+            maskStatus: stage >= 3 ? "욕설 삐 처리 및 고성 완화" : "욕설 구간 삐 처리",
+            systemText: `${stage}단계 경고가 기록되었습니다. 욕설 구간은 상담사 청취 전에 삐 처리됩니다.`,
+          });
         }
 
         markDemoPhase("policy");
-        setDemoStep("Policy Engine: 폭언/고성 4단계 점등 완료, 상담 종료 안내 단계");
-        generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 16);
+        setDemoClock(25);
+        setDemoStep("Policy Engine: 4단계 도달, 상담 종료 및 보고서 생성");
+        setStatus("4단계 도달: 상담 종료 안내 및 보고서 생성");
+        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system");
+        generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 25);
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
       }
@@ -672,63 +745,68 @@ export default function App() {
         level: 34,
         raised: false,
         title: "욕설 구간 삐 처리 데모",
+        setup: [
+          ["상담사", "서울시 120다산콜센터입니다. 어떤 내용을 도와드릴까요?"],
+          ["고객", "주차 단속 문자 받고 전화했어요. 이거 잘못된 것 같습니다."],
+          ["상담사", "차량번호와 단속 위치를 확인한 뒤 안내드리겠습니다."],
+        ] as Array<[DemoDialogueLine["role"], string]>,
+        systemText: "욕설 단어 구간만 삐 처리하고 1단계 경고를 기록했습니다.",
+        maskStatus: "욕설 구간 삐 처리",
+        stageKind: "abuse" as const,
       },
       sexual: {
         text: "목소리 섹시해요. 퇴근하면 기다릴게요",
         level: 36,
         raised: false,
         title: "성희롱 경고·보고서 데모",
+        setup: [
+          ["상담사", "복지 서비스 신청 절차 안내드리겠습니다."],
+          ["고객", "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요."],
+          ["상담사", "민원 내용 중심으로 안내드리겠습니다."],
+        ] as Array<[DemoDialogueLine["role"], string]>,
+        systemText: "성희롱 가능 발언으로 경고 TTS와 증빙 로그를 준비했습니다.",
+        maskStatus: "성희롱 경고 TTS 및 증빙 로그",
+        stageKind: "sexual" as const,
       },
       raised: {
         text: "왜 이렇게 처리가 늦습니까. 당장 해결하세요",
         level: 76,
         raised: true,
         title: "고성 피치/볼륨 완화 데모",
+        setup: [
+          ["상담사", "상수도 요금 문의 접수 도와드리겠습니다."],
+          ["고객", "지난달보다 요금이 많이 나왔습니다. 확인해주세요."],
+          ["상담사", "검침 내역과 감면 적용 여부를 차례로 확인하겠습니다."],
+        ] as Array<[DemoDialogueLine["role"], string]>,
+        systemText: "고성 구간의 피치와 볼륨을 낮춰 상담사에게 전달했습니다.",
+        maskStatus: "고성 구간 피치/볼륨 완화",
+        stageKind: "abuse" as const,
       },
     }[type];
 
     try {
-      markDemoPhase("input");
-      setDemoStep(`${script.title}: 고객 음성 입력`);
-      setInterimText(script.text);
-      setLevel(script.level);
-      setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
-      await sleep(650);
-
-      markDemoPhase("detect");
-      setDemoStep("즉시 감지 경로: RMS/STT 인터림/로컬 사전 확인");
-      setStatus(script.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
-      await analyzeDemo(script.text, script.raised, "immediate");
-      setEscalationStage(type === "sexual" ? "sexual" : "abuse", 1);
-      await sleep(900);
-
-      markDemoPhase("mask");
-      setDemoStep(
-        type === "abuse"
-          ? "출력 커서: 욕설 단어 구간에만 비프음 마스크 적용"
-          : type === "raised"
-            ? "출력 커서: 고성 구간 피치/볼륨 완화 마스크 적용"
-            : "정책 엔진: 성희롱 경고 TTS와 증빙 로그 액션 준비",
-      );
-      setStatus(
-        type === "raised"
-          ? "고성 구간 피치/볼륨 완화"
-          : type === "sexual"
-            ? "성희롱 경고 TTS 및 증빙 로그"
-            : "욕설 단어 삐 처리",
-      );
-      await sleep(900);
-
-      markDemoPhase("context");
-      setDemoStep("3초 문맥 판단 경로: 맥락 엔진 분석 결과를 정책 엔진에 반영");
-      setStatus("3초 문맥 스냅샷 분석 중");
-      await analyzeDemo(script.text, false, "context_snapshot");
+      setDemoStep(`${script.title}: 실제 상담 예시 시작`);
+      await say(script.setup[0][0], script.setup[0][1], 1);
+      await say(script.setup[1][0], script.setup[1][1], 3);
+      await say(script.setup[2][0], script.setup[2][1], 5);
+      await riskTurn({
+        text: script.text,
+        seconds: 8,
+        level: script.level,
+        raised: script.raised,
+        stageKind: script.stageKind,
+        stage: 1,
+        maskStatus: script.maskStatus,
+        systemText: script.systemText,
+      });
       if (type === "sexual") setEscalationStage("sexual", 2);
-      await sleep(600);
 
       markDemoPhase("policy");
-      setDemoStep("Policy Engine: 단계 상승, 경고, 로그, 보고서 액션 결정 완료");
-      generateReport("데모 종료", escalationRef.current, 8);
+      setDemoClock(14);
+      setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 완료");
+      setStatus("특이민원 보고서 생성 완료");
+      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system");
+      generateReport("데모 종료", escalationRef.current, 14);
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
     }
@@ -958,6 +1036,22 @@ export default function App() {
             </div>
             <strong>{Math.round(level)}</strong>
           </div>
+          {demoDialogue.length > 0 && (
+            <section className="demo-dialogue-panel">
+              <div className="timestamp-head">
+                <strong>시연 대화</strong>
+                <span>데모용 예시 발화</span>
+              </div>
+              <div className="demo-dialogue-list">
+                {demoDialogue.map((line) => (
+                  <article key={line.id} className={`demo-line ${line.tone ?? "normal"}`}>
+                    <b>{line.role}</b>
+                    <p>{line.text}</p>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           <section className="timestamp-panel">
             <div className="timestamp-head">
               <strong>문장 타임스탬프</strong>

@@ -286,7 +286,7 @@ button:hover { transform: translateY(-1px); }
   color: #0f172a;
 }
 .timestamp-panel {
-  order: 3;
+  order: 4;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcff;
@@ -362,6 +362,49 @@ button:hover { transform: translateY(-1px); }
   border-color: #fed7aa;
   background: #fffbf5;
 }
+.demo-dialogue-panel {
+  order: 3;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+.demo-dialogue-list {
+  display: grid;
+  gap: 8px;
+}
+.demo-line {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 9px 10px;
+}
+.demo-line b {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+.demo-line p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.demo-line.risk {
+  border-color: #fecaca;
+  background: #fffafa;
+}
+.demo-line.risk b { color: var(--red); }
+.demo-line.system {
+  border-color: #c7d8ff;
+  background: var(--blue-soft);
+}
+.demo-line.system b { color: var(--blue); }
 .meter {
   order: 2;
   display: grid;
