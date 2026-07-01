@@ -22,12 +22,21 @@ type ProtectionPreview = {
   actions: string[];
 };
 
+type SpeechTiming = {
+  startedAtMs: number;
+  resultAtMs: number;
+};
+
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
   outputDelay: 1.5,
   meterGain: 400,
-  muteMs: 2000,
+  beepMinMs: 420,
+  beepCharMs: 95,
+  beepMaxMs: 1100,
+  beepFrequency: 880,
+  beepVolume: 0.18,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
   warningMessages: [
@@ -56,7 +65,7 @@ const pathLabel: Record<AnalysisMode, string> = {
 };
 
 const actionLabel: Record<PolicyAction, string> = {
-  mute: "묵음",
+  mute: "삐 처리",
   pitch_shift: "피치 완화",
   volume_reduce: "볼륨 완화",
   warn_tts: "경고 TTS",
@@ -75,6 +84,28 @@ function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | 
   const over = (level - threshold) / (100 - threshold);
   const curve = gender === "female" ? { base: 0.07, span: 0.1 } : { base: 0.1, span: 0.15 };
   return -(curve.base + curve.span * Math.min(1, over));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function findTriggeredSpan(text: string, words: string[]) {
+  const lowerText = text.toLowerCase();
+  const matches = words
+    .map((word) => {
+      const index = lowerText.indexOf(word.toLowerCase());
+      return index >= 0 ? { word, index, length: word.length } : null;
+    })
+    .filter((match): match is { word: string; index: number; length: number } => Boolean(match))
+    .sort((a, b) => a.index - b.index || b.length - a.length);
+
+  return matches[0];
+}
+
+function beepDurationFor(result: AnalyzeResponse) {
+  const longest = result.triggeredWords.reduce((max, word) => Math.max(max, word.length), 0);
+  return clamp(CFG.beepMinMs + longest * CFG.beepCharMs, CFG.beepMinMs, CFG.beepMaxMs);
 }
 
 function initialCounts() {
@@ -97,7 +128,7 @@ function initialPreview(mode: AnalysisMode): ProtectionPreview {
 
 function summarizePolicy(result: AnalyzeResponse) {
   if (result.detectionPath === "immediate") {
-    if (result.policyActions.includes("mute")) return "로컬 사전 감지: 출력 커서에서 묵음 마스크 적용";
+    if (result.policyActions.includes("mute")) return "로컬 사전 감지: 욕설 단어 구간에 비프음 마스크 적용";
     if (result.policyActions.includes("pitch_shift") || result.policyActions.includes("volume_reduce")) {
       return "RMS 고성 감지: 피치/볼륨 완화 마스크 적용";
     }
@@ -144,6 +175,7 @@ export default function App() {
   const seenEventRef = useRef(new Set<string>());
   const announcingRef = useRef(false);
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
+  const speechStartAtRef = useRef<number | null>(null);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -158,6 +190,7 @@ export default function App() {
     recognition?: SpeechRecognition;
     timer?: number;
     contextTimer?: number;
+    maskTimer?: number;
   }>({ raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 });
 
   const counts = useMemo(() => {
@@ -222,7 +255,7 @@ export default function App() {
 
       const offset = pitchOffsetForLevel(nextLevel, threshold, gender);
       current.jungle.setPitchOffset(offset);
-      setStatus(offset < 0 ? "고성 구간 피치/볼륨 완화" : muted ? "욕설 구간 묵음 처리" : "보호된 상담사 청취 출력");
+      setStatus(offset < 0 ? "고성 구간 피치/볼륨 완화" : muted ? "욕설 단어 삐 처리" : "보호된 상담사 청취 출력");
 
       if (!announcingRef.current && nextLevel >= threshold) {
         current.raisedSustainMs += dt;
@@ -253,19 +286,66 @@ export default function App() {
     state.raf = requestAnimationFrame(loop);
   }
 
-  function muteOutput() {
-    const { ctx, outGain } = audioRef.current;
-    if (!ctx || !outGain) return;
+  function playBeep(ctx: AudioContext, startAt: number, durationMs: number) {
+    const oscillator = ctx.createOscillator();
+    const beepGain = ctx.createGain();
+    const endAt = startAt + durationMs / 1000;
 
-    const t = ctx.currentTime;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(CFG.beepFrequency, startAt);
+    beepGain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    beepGain.gain.setValueAtTime(0.0001, startAt);
+    beepGain.gain.linearRampToValueAtTime(CFG.beepVolume, startAt + 0.015);
+    beepGain.gain.setValueAtTime(CFG.beepVolume, Math.max(startAt + 0.02, endAt - 0.025));
+    beepGain.gain.linearRampToValueAtTime(0.0001, endAt);
+
+    oscillator.connect(beepGain);
+    beepGain.connect(ctx.destination);
+    oscillator.start(startAt);
+    oscillator.stop(endAt + 0.05);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      beepGain.disconnect();
+    };
+  }
+
+  function estimateBeepStart(result: AnalyzeResponse, text: string, timing: SpeechTiming | undefined, ctx: AudioContext) {
+    const span = findTriggeredSpan(text, result.triggeredWords);
+    if (!span || !timing) return ctx.currentTime + 0.08;
+
+    const utteranceMs = clamp(timing.resultAtMs - timing.startedAtMs, 450, 5000);
+    const ratio = clamp(span.index / Math.max(1, text.length), 0, 0.92);
+    const wordInputAtMs = timing.startedAtMs + utteranceMs * ratio;
+    const wordOutputAtMs = wordInputAtMs + CFG.outputDelay * 1000;
+    const delaySeconds = Math.max(0.04, (wordOutputAtMs - performance.now()) / 1000);
+
+    return ctx.currentTime + delaySeconds;
+  }
+
+  function beepProfanitySegment(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
+    const { ctx, outGain } = audioRef.current;
+    const durationMs = beepDurationFor(result);
+    if (!ctx || !outGain) {
+      setMuted(true);
+      window.setTimeout(() => setMuted(false), durationMs);
+      return;
+    }
+
+    const startAt = estimateBeepStart(result, text, timing, ctx);
+    const endAt = startAt + durationMs / 1000;
     const gain = outGain.gain;
-    gain.cancelScheduledValues(t);
-    gain.setValueAtTime(gain.value, t);
-    gain.linearRampToValueAtTime(0.0001, t + 0.04);
-    gain.setValueAtTime(0.0001, t + CFG.muteMs / 1000);
-    gain.linearRampToValueAtTime(1, t + CFG.muteMs / 1000 + 0.06);
+
+    gain.cancelScheduledValues(ctx.currentTime);
+    gain.setValueAtTime(gain.value, ctx.currentTime);
+    gain.setValueAtTime(gain.value, Math.max(ctx.currentTime, startAt - 0.01));
+    gain.linearRampToValueAtTime(0.0001, startAt + 0.025);
+    gain.setValueAtTime(0.0001, endAt);
+    gain.linearRampToValueAtTime(1, endAt + 0.05);
+    playBeep(ctx, startAt, durationMs);
+
     setMuted(true);
-    window.setTimeout(() => setMuted(false), CFG.muteMs);
+    if (audioRef.current.maskTimer) window.clearTimeout(audioRef.current.maskTimer);
+    audioRef.current.maskTimer = window.setTimeout(() => setMuted(false), Math.max(0, (endAt - ctx.currentTime) * 1000 + 80));
   }
 
   function speak(text: string) {
@@ -297,7 +377,7 @@ export default function App() {
     else setContextPreview(preview);
   }
 
-  function applyPolicy(result: AnalyzeResponse, text: string) {
+  function applyPolicy(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
     updatePreview(result, text);
 
     const shouldLog =
@@ -305,11 +385,10 @@ export default function App() {
       result.emotion === "angry" ||
       result.emotion === "threatening" ||
       result.policyActions.includes("report");
-
-    if (shouldLog && !appendLog(result, text)) return;
+    const logged = shouldLog ? appendLog(result, text) : true;
 
     if (result.detectionPath === "immediate") {
-      if (result.policyActions.includes("mute")) muteOutput();
+      if (result.policyActions.includes("mute")) beepProfanitySegment(result, text, timing);
       if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
     } else if (result.eventType !== "normal") {
       setContextStatus(`Claude 문맥 판단: ${eventLabel[result.eventType]} / ${result.emotion}`);
@@ -317,7 +396,7 @@ export default function App() {
       setContextStatus("Claude 문맥 판단: 특이 위험 없음");
     }
 
-    if (!result.policyActions.includes("warn_tts")) return;
+    if (!logged || !result.policyActions.includes("warn_tts")) return;
 
     if (result.eventType === "sexual") {
       const next = Math.min(2, countersRef.current.sexual);
@@ -331,20 +410,20 @@ export default function App() {
     }
   }
 
-  async function processText(text: string, analysisMode: AnalysisMode) {
+  async function processText(text: string, analysisMode: AnalysisMode, timing?: SpeechTiming) {
     const clean = text.trim();
     if (!clean) return;
 
     const raised = analysisMode === "immediate" && Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
     try {
       const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs);
-      applyPolicy(result, clean);
+      applyPolicy(result, clean, timing);
     } catch {
       setError("분석 서버 연결에 실패했습니다. backend 서버가 실행 중인지 확인해주세요.");
     }
   }
 
-  function queueInterimImmediate(text: string) {
+  function queueInterimImmediate(text: string, timing: SpeechTiming) {
     const clean = text.trim();
     if (!clean || announcingRef.current) return;
     if (clean === interimCheckRef.current.lastText) return;
@@ -361,13 +440,13 @@ export default function App() {
 
     interimCheckRef.current.timer = window.setTimeout(() => {
       interimCheckRef.current.lastText = clean;
-      void processText(clean, "immediate");
+      void processText(clean, "immediate", timing);
     }, 360);
   }
 
   async function analyzeDemo(text: string, raised: boolean, analysisMode: AnalysisMode) {
     const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs);
-    applyPolicy(result, text);
+    applyPolicy(result, text, { startedAtMs: performance.now() - 900, resultAtMs: performance.now() });
     return result;
   }
 
@@ -384,6 +463,7 @@ export default function App() {
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
     interimCheckRef.current.lastText = "";
+    speechStartAtRef.current = null;
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
 
     const script = {
@@ -391,7 +471,7 @@ export default function App() {
         text: "시발 뭐하는 거야",
         level: 34,
         raised: false,
-        title: "욕설 즉시 묵음 데모",
+        title: "욕설 구간 삐 처리 데모",
       },
       sexual: {
         text: "목소리 섹시해요. 퇴근하면 기다릴게요",
@@ -431,8 +511,8 @@ export default function App() {
       await analyzeDemo(script.text, script.raised, "immediate");
       await sleep(900);
 
-      setDemoStep("출력 커서: 보호 마스크 적용 후 상담사 청취 출력");
-      setStatus(script.raised ? "고성 구간 피치/볼륨 완화" : "욕설/성희롱 구간 묵음 처리");
+      setDemoStep("출력 커서: 욕설 단어 구간에만 비프음 마스크 적용");
+      setStatus(script.raised ? "고성 구간 피치/볼륨 완화" : "욕설 단어 삐 처리");
       await sleep(900);
 
       setDemoStep("3초 문맥 판단 경로: Claude 스냅샷 분석 결과를 정책 엔진에 반영");
@@ -484,6 +564,9 @@ export default function App() {
     recognition.maxAlternatives = 1;
     recognition.onresult = (event) => {
       if (announcingRef.current) return;
+      const resultAtMs = performance.now();
+      if (!speechStartAtRef.current) speechStartAtRef.current = resultAtMs - 650;
+      const timing = { startedAtMs: speechStartAtRef.current, resultAtMs };
       let interim = "";
       let final = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -494,12 +577,19 @@ export default function App() {
       if (interim) {
         setInterimText(interim);
         pushContext(interim);
-        queueInterimImmediate(interim);
+        queueInterimImmediate(interim, timing);
       }
       if (final) {
         pushContext(final);
-        void processText(final, "immediate");
+        void processText(final, "immediate", timing);
+        speechStartAtRef.current = null;
       }
+    };
+    recognition.onspeechstart = () => {
+      speechStartAtRef.current = performance.now();
+    };
+    recognition.onspeechend = () => {
+      speechStartAtRef.current = null;
     };
     recognition.onend = () => {
       if (audioRef.current.recognition) recognition.start();
@@ -519,6 +609,7 @@ export default function App() {
     contextBufferRef.current = [];
     seenEventRef.current.clear();
     interimCheckRef.current.lastText = "";
+    speechStartAtRef.current = null;
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
@@ -546,10 +637,12 @@ export default function App() {
     if (state.timer) clearInterval(state.timer);
     if (state.contextTimer) clearInterval(state.contextTimer);
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
+    if (state.maskTimer) clearTimeout(state.maskTimer);
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
     interimCheckRef.current.lastText = "";
+    speechStartAtRef.current = null;
     announcingRef.current = false;
     setActive(false);
     setLevel(0);
@@ -624,7 +717,7 @@ export default function App() {
               <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
               <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
             </div>
-            <span className={muted ? "pill mute" : "pill"}>{muted ? "묵음 처리 중" : status}</span>
+            <span className={muted ? "pill mute" : "pill"}>{muted ? "삐 처리 중" : status}</span>
           </div>
           <div className="pipeline">
             <div><strong>즉시 감지 경로</strong><span>RMS · STT 인터림 · 로컬 사전 · 즉시 마스크</span></div>
@@ -662,7 +755,7 @@ export default function App() {
               <span>{demoStep}</span>
             </div>
             <div className="demo-actions">
-              <button onClick={() => void runDemo("abuse")}>욕설 묵음</button>
+              <button onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
               <button onClick={() => void runDemo("raised")}>고성 완화</button>
               <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
             </div>
