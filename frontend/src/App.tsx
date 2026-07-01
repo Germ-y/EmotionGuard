@@ -9,20 +9,6 @@ type LogEntry = AnalyzeResponse & {
   timestamp: string;
 };
 
-type PreviewSource = AnalyzeResponse["source"] | "browser" | "pending";
-
-type ProtectionPreview = {
-  mode: AnalysisMode;
-  title: string;
-  status: string;
-  input: string;
-  output: string;
-  eventType: EventType;
-  source: PreviewSource;
-  emotion: AnalyzeResponse["emotion"];
-  actions: string[];
-};
-
 type SpeechTiming = {
   startedAtMs: number;
   resultAtMs: number;
@@ -96,13 +82,11 @@ const actionLabel: Record<PolicyAction, string> = {
   report: "보고서",
 };
 
-const sourceLabel: Record<PreviewSource, string> = {
+const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   local: "로컬 사전",
   openai: "GPT API",
   claude: "Claude API",
   fallback: "Fallback(LLM 비활성)",
-  browser: "브라우저",
-  pending: "대기",
 };
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -172,49 +156,6 @@ function initialEscalation(): EscalationState {
   return { abuse: 0, sexual: 0 };
 }
 
-function initialPreview(mode: AnalysisMode): ProtectionPreview {
-  return {
-    mode,
-    title: mode === "immediate" ? "즉시 마스킹 처리" : "3초 맥락 처리",
-    status: mode === "immediate" ? "STT 인터림과 로컬 사전 감지 대기" : "3초 스냅샷과 맥락 엔진 판단 대기",
-    input: "-",
-    output: "-",
-    eventType: "normal",
-    source: "pending",
-    emotion: "normal",
-    actions: [],
-  };
-}
-
-function summarizePolicy(result: AnalyzeResponse) {
-  if (result.detectionPath === "immediate") {
-    if (result.policyActions.includes("mute")) return "로컬 사전 감지: 욕설 단어 구간에 비프음 마스크 적용";
-    if (result.policyActions.includes("pitch_shift") || result.policyActions.includes("volume_reduce")) {
-      return "RMS 고성 감지: 피치/볼륨 완화 마스크 적용";
-    }
-    return "즉시 위험 없음: 원문 전달";
-  }
-
-  const engine = sourceLabel[result.source];
-  if (result.policyActions.includes("report")) return `${engine} 맥락 판단: 경고·에스컬레이션·보고서 액션 반영`;
-  if (result.eventType !== "normal") return `${engine} 맥락 판단: 단계 상승과 경고 액션 반영`;
-  return `${engine} 맥락 판단: 특이 위험 없음`;
-}
-
-function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPreview {
-  return {
-    mode: result.detectionPath,
-    title: result.detectionPath === "immediate" ? "즉시 마스킹 처리" : "3초 맥락 처리",
-    status: summarizePolicy(result),
-    input,
-    output: result.maskedText || input,
-    eventType: result.eventType,
-    source: result.source,
-    emotion: result.emotion,
-    actions: result.policyActions.map((action) => actionLabel[action]),
-  };
-}
-
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
@@ -250,13 +191,10 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
   const [status, setStatus] = useState("대기 중");
-  const [contextStatus, setContextStatus] = useState("3초 문맥 스냅샷 대기");
   const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
   const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
   const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
-  const [immediatePreview, setImmediatePreview] = useState<ProtectionPreview>(() => initialPreview("immediate"));
-  const [contextPreview, setContextPreview] = useState<ProtectionPreview>(() => initialPreview("context_snapshot"));
   const [report, setReport] = useState<IncidentReport | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
   const [error, setError] = useState("");
@@ -379,17 +317,7 @@ export default function App() {
           markDemoPhase("detect");
           markDemoPhase("mask");
           setInterimText("RMS 고성 분석 감지 - 출력 커서에서 음정을 낮춰 전달합니다.");
-          setImmediatePreview({
-            mode: "immediate",
-            title: "즉시 마스킹 처리",
-            status: "RMS 고성 분석: 출력 커서에서 피치/볼륨 완화 마스크 적용",
-            input: "기준 음량을 초과한 고객 음성",
-            output: "낮아진 음정과 완화된 볼륨으로 상담사에게 전달",
-            eventType: "raised",
-            source: "browser",
-            emotion: "angry",
-            actions: ["피치 완화", "볼륨 완화", "단계 상승"],
-          });
+          setStatus("고성 구간 피치/볼륨 완화");
         }
       } else if (nextLevel < threshold * 0.8) {
         current.raisedSustainMs = 0;
@@ -529,14 +457,7 @@ export default function App() {
     });
   }
 
-  function updatePreview(result: AnalyzeResponse, text: string) {
-    const preview = previewFromResult(result, text);
-    if (result.detectionPath === "immediate") setImmediatePreview(preview);
-    else setContextPreview(preview);
-  }
-
   function applyPolicy(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
-    updatePreview(result, text);
     advanceEscalation(result, text);
     if (result.detectionPath === "context_snapshot") markDemoPhase("context");
     if (
@@ -565,9 +486,9 @@ export default function App() {
       if (result.policyActions.includes("mute")) beepProfanitySegment(result, text, timing);
       if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
     } else if (result.eventType !== "normal") {
-      setContextStatus(`${sourceLabel[result.source]} 맥락 판단: ${eventLabel[result.eventType]} / ${result.emotion}`);
+      setStatus(`${sourceLabel[result.source]} 문맥 판단: ${eventLabel[result.eventType]}`);
     } else {
-      setContextStatus(`${sourceLabel[result.source]} 맥락 판단: 특이 위험 없음`);
+      setStatus(`${sourceLabel[result.source]} 문맥 판단 완료`);
     }
 
     if (!logged || !result.policyActions.includes("warn_tts")) return;
@@ -670,14 +591,7 @@ export default function App() {
 
     markDemoPhase("detect");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
-    setImmediatePreview((prev) => ({
-      ...prev,
-      status: "STT 인터림 분석 대기: 로컬 사전 즉시 확인 준비",
-      input: clean,
-      output: "분석 중",
-      source: "pending",
-      actions: [],
-    }));
+    setStatus("STT 인터림 분석 중");
 
     interimCheckRef.current.timer = window.setTimeout(() => {
       interimCheckRef.current.lastText = clean;
@@ -708,8 +622,6 @@ export default function App() {
     setCopyStatus("");
     sessionStartedAtRef.current = new Date();
     markDemoPhase("idle");
-    setImmediatePreview(initialPreview("immediate"));
-    setContextPreview(initialPreview("context_snapshot"));
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
@@ -724,7 +636,6 @@ export default function App() {
 
       try {
         setDemoStep("폭언/고성 4단계 상승 데모: 반복 위험 이벤트 입력");
-        setContextPreview(initialPreview("context_snapshot"));
         for (let index = 0; index < lines.length; index += 1) {
           const stage = index + 1;
           const text = lines[index];
@@ -782,18 +693,6 @@ export default function App() {
       setInterimText(script.text);
       setLevel(script.level);
       setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
-      setImmediatePreview({
-        ...initialPreview("immediate"),
-        status: "고객 음성이 Ring Buffer에 들어오고 STT 인터림이 생성됨",
-        input: script.text,
-        output: "즉시 분석 전",
-      });
-      setContextPreview({
-        ...initialPreview("context_snapshot"),
-        status: "3초 문맥 스냅샷 대기",
-        input: script.text,
-        output: "문맥 분석 전",
-      });
       await sleep(650);
 
       markDemoPhase("detect");
@@ -822,7 +721,7 @@ export default function App() {
 
       markDemoPhase("context");
       setDemoStep("3초 문맥 판단 경로: 맥락 엔진 분석 결과를 정책 엔진에 반영");
-      setContextStatus("3초 문맥 스냅샷 분석 중");
+      setStatus("3초 문맥 스냅샷 분석 중");
       await analyzeDemo(script.text, false, "context_snapshot");
       if (type === "sexual") setEscalationStage("sexual", 2);
       await sleep(600);
@@ -844,19 +743,11 @@ export default function App() {
     if (announcingRef.current) return;
     const snapshot = contextBufferRef.current.join(" ").trim();
     if (!snapshot) {
-      setContextStatus("3초 문맥 스냅샷 대기");
+      setStatus("3초 문맥 스냅샷 대기");
       return;
     }
-    setContextStatus("3초 문맥 스냅샷 분석 중");
+    setStatus("3초 문맥 스냅샷 분석 중");
     markDemoPhase("context");
-    setContextPreview((prev) => ({
-      ...prev,
-      status: "3초 문맥 스냅샷 분석 중: 맥락 엔진 판단 대기",
-      input: snapshot,
-      output: "문맥 판단 중",
-      source: "pending",
-      actions: [],
-    }));
     await processText(snapshot, "context_snapshot");
   }
 
@@ -917,7 +808,7 @@ export default function App() {
     reportLogsRef.current = [];
     setElapsed(0);
     setInterimText("상담을 듣고 있습니다.");
-    setContextStatus("3초 문맥 스냅샷 대기");
+    setStatus("보호된 상담사 청취 출력");
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
     seenEventRef.current.clear();
@@ -929,8 +820,6 @@ export default function App() {
     setCopyStatus("");
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
-    setImmediatePreview(initialPreview("immediate"));
-    setContextPreview(initialPreview("context_snapshot"));
     setActive(true);
 
     try {
@@ -966,7 +855,6 @@ export default function App() {
     setLevel(0);
     setMuted(false);
     setStatus("대기 중");
-    setContextStatus("3초 문맥 스냅샷 대기");
     generateReport("상담 종료", escalationRef.current, elapsed);
     setInterimText("상담이 종료되었습니다. 특이민원 보고서가 생성되었습니다.");
     setStatus("특이민원 보고서 생성 완료");
@@ -1064,46 +952,26 @@ export default function App() {
             </div>
             <strong>{Math.round(level)}</strong>
           </div>
-          <div className="controls">
-            <label>
-              고성 기준
-              <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-            </label>
-            <div className="segmented">
-              <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
-              <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
+          <div className="guard-summary">
+            <div>
+              <strong>현재 보호 상태</strong>
+              <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
             </div>
-            <span className={muted ? "pill mute" : "pill"}>{muted ? "삐 처리 중" : status}</span>
-          </div>
-          <div className="pipeline">
-            <div><strong>즉시 감지 경로</strong><span>RMS · STT 인터림 · 로컬 사전 · 즉시 마스크</span></div>
-            <div><strong>AI 문맥 경로</strong><span>{contextStatus}</span></div>
-            <div><strong>출력 커서</strong><span>{CFG.outputDelay}s 지연 후 보호 마스크 적용</span></div>
-          </div>
-          <div className="live-compare">
-            {[immediatePreview, contextPreview].map((preview) => (
-              <article key={preview.mode} className={`preview ${preview.eventType}`}>
-                <div className="preview-head">
-                  <strong>{preview.title}</strong>
-                  <span>{pathLabel[preview.mode]} · {eventLabel[preview.eventType]} · {sourceLabel[preview.source]}</span>
-                </div>
-                <p>{preview.status}</p>
-                <dl>
-                  <div>
-                    <dt>입력</dt>
-                    <dd>{preview.input}</dd>
-                  </div>
-                  <div>
-                    <dt>처리 결과</dt>
-                    <dd>{preview.output}</dd>
-                  </div>
-                </dl>
-                <div className="action-tags">
-                  {preview.actions.length === 0 && <span>대기</span>}
-                  {preview.actions.map((action) => <span key={action}>{action}</span>)}
-                </div>
-              </article>
-            ))}
+            <div>
+              <strong>고성 기준</strong>
+              <span>{threshold}% · {gender === "male" ? "남성 음성 보정" : "여성 음성 보정"}</span>
+            </div>
+            <details className="guard-settings">
+              <summary>고성 설정</summary>
+              <label>
+                기준
+                <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+              </label>
+              <div className="segmented">
+                <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
+                <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
+              </div>
+            </details>
           </div>
         </div>
 
