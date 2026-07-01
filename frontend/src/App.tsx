@@ -926,6 +926,32 @@ export default function App() {
       <section className="grid">
         <div className="panel main">
           <div className="timer">{mm}:{ss}</div>
+          <section className="guard-panel">
+            <div className="guard-state">
+              <strong>현재 보호 상태</strong>
+              <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
+            </div>
+            <label className="threshold-control">
+              <span>고성 기준</span>
+              <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+              <b>{threshold}%</b>
+            </label>
+            <div className="voice-control">
+              <span>음성 보정</span>
+              <div className="segmented">
+                <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
+                <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
+              </div>
+            </div>
+          </section>
+          <div className="meter">
+            <label>RMS</label>
+            <div className="track">
+              <div className="fill" style={{ width: `${level}%` }} />
+              <i style={{ left: `${threshold}%` }} />
+            </div>
+            <strong>{Math.round(level)}</strong>
+          </div>
           <section className="timestamp-panel">
             <div className="timestamp-head">
               <strong>문장 타임스탬프</strong>
@@ -944,35 +970,6 @@ export default function App() {
               ))}
             </div>
           </section>
-          <div className="meter">
-            <label>RMS</label>
-            <div className="track">
-              <div className="fill" style={{ width: `${level}%` }} />
-              <i style={{ left: `${threshold}%` }} />
-            </div>
-            <strong>{Math.round(level)}</strong>
-          </div>
-          <div className="guard-summary">
-            <div>
-              <strong>현재 보호 상태</strong>
-              <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
-            </div>
-            <div>
-              <strong>고성 기준</strong>
-              <span>{threshold}% · {gender === "male" ? "남성 음성 보정" : "여성 음성 보정"}</span>
-            </div>
-            <details className="guard-settings">
-              <summary>고성 설정</summary>
-              <label>
-                기준
-                <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-              </label>
-              <div className="segmented">
-                <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
-                <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
-              </div>
-            </details>
-          </div>
         </div>
 
         <aside className="panel">
