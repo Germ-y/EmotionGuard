@@ -17,8 +17,8 @@
 
 - RMS 고성 분석
 - 실시간 pitch, peak, zero crossing rate, spectral centroid 추출
-- 로컬 욕설 사전 감지
-- 로컬 성희롱 표현 감지
+- 비윤리 표현 사전 감지
+- 성희롱 표현 사전 감지
 - 즉시 위험 이벤트 생성
 
 ### AI 문맥 판단 레이어
@@ -50,7 +50,7 @@
 
 1. 고객 음성 입력은 계속 들어온다.
 2. 입력은 20ms 오디오 프레임 단위로 Ring Buffer에 쌓인다.
-3. 즉시 감지 경로가 RMS, STT 인터림, 로컬 사전을 빠르게 확인한다.
+3. 즉시 감지 경로가 RMS, STT 인터림, 비윤리 표현 사전을 빠르게 확인한다.
 4. 위험 이벤트가 생기면 욕설 구간 비프음/피치/볼륨 마스크를 만든다.
 5. 출력 커서는 약간 뒤에서 따라가며 마스크를 적용한 뒤 상담사에게 보호된 음성을 들려준다.
 6. 3초 스냅샷 경로는 별도로 돌아가며 맥락 엔진 판단을 수행한다.
@@ -66,7 +66,7 @@
 | STT 스트림 | Web Speech API |
 | 음향 메타데이터 | `frontend/src/App.tsx`의 RMS/pitch/ZCR/spectral centroid 추출 |
 | 3초 문맥 스냅샷 | `context_snapshot` 분석 모드 |
-| 로컬 사전 감지 | `backend/app/data/dictionaries.json`, `local_classifier.py` |
+| 비윤리 표현 사전 감지 | `backend/app/data/dictionaries.json`, `local_classifier.py` |
 | 맥락 엔진 판단 | `backend/app/services/context_engine.py` (`source=openai`, `source=claude`, `source=fallback`) |
 | 정책 엔진 | `backend/app/services/policy_engine.py` 및 프론트 단계 카운터 |
 | 로그/대시보드 | React 상담사 대시보드 |

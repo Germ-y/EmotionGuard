@@ -1,6 +1,6 @@
 # AI-Hub 사전 확장 파이프라인
 
-EmotionGuard는 기본 로컬 사전인 `backend/app/data/dictionaries.json`을 우선 사용한다. AI-Hub 텍스트 윤리검증 데이터는 원본을 그대로 커밋하지 않고, 로컬에서 `backend/app/data/dictionaries.aihub.json` 확장 사전으로 변환한 뒤 런타임에 자동 병합한다.
+EmotionGuard는 기본 비윤리 표현 사전인 `backend/app/data/dictionaries.json`을 우선 사용한다. AI-Hub 텍스트 윤리검증 데이터는 원본을 그대로 커밋하지 않고, 개발 환경에서 `backend/app/data/dictionaries.aihub.json` 확장 사전으로 변환한 뒤 런타임에 자동 병합한다.
 
 ## 사용 의도
 
@@ -53,8 +53,8 @@ python3 scripts/extract_aihub_ethics_dictionary.py data/aihub/text-ethics
 
 AI-Hub 확장 사전이 있을 때도 정책은 보수적으로 동작한다.
 
-- 욕설 로컬 매칭: 즉시 `mute` 액션과 보고서 기록
-- 성희롱 로컬 매칭: 명시적 로컬 표현일 때만 즉시 `mute` 액션
+- 욕설 사전 매칭: 즉시 `mute` 액션과 보고서 기록
+- 성희롱 사전 매칭: 명시적 사전 표현일 때만 즉시 `mute` 액션
 - LLM 또는 fallback 맥락 판단 성희롱: 즉시 묵음이 아니라 경고, 에스컬레이션, 보고서에 사용
 
 즉, 후보 데이터셋은 “발표 데모 및 사전 후보 확장”에는 쓰지만, 운영 환경에서는 수요기관 도메인 로그로 검수한 뒤 확정 사전에 승격하는 흐름이 필요하다.

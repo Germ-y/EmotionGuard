@@ -106,6 +106,9 @@ const CFG = {
   liveChunkMaxInflight: 2,
   liveChunkMinBytes: 900,
   liveChunkVoiceWindowMs: 1600,
+  liveChunkMinLevel: 2.2,
+  liveChunkMinPeak: 0.01,
+  normalRepeatDedupeMs: 10000,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
     "고객님, 마음을 가라앉히시고 차분히 말씀해 주셔야 도움을 드릴 수 있습니다.",
@@ -141,11 +144,16 @@ const actionLabel: Record<PolicyAction, string> = {
 };
 
 const sourceLabel: Record<AnalyzeResponse["source"], string> = {
-  local: "로컬 사전",
+  local: "비윤리 표현 사전",
   openai: "GPT API",
   claude: "Claude API",
   fallback: "기본 문맥 엔진",
 };
+
+function timelineDetailFor(log: LogEntry) {
+  if (log.eventType === "normal") return "정상 · STT 기록";
+  return `${eventLabel[log.eventType]} · ${pathLabel[log.detectionPath]} · ${log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[log.source]}`;
+}
 
 const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
 const REPORT_ARCHIVE_LIMIT = 80;
@@ -168,9 +176,9 @@ const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve
 
 const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> = [
   { id: "input", label: "음성 입력", detail: "20ms Frame" },
-  { id: "detect", label: "빠른 감지", detail: "RMS/STT/로컬 사전" },
+  { id: "detect", label: "빠른 감지", detail: "RMS/STT/비윤리 표현" },
   { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
-  { id: "context", label: "3초 맥락", detail: "GPT/Claude/로컬 문맥" },
+  { id: "context", label: "3초 맥락", detail: "GPT/Claude/기본 문맥" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
 
@@ -298,6 +306,32 @@ function featureValue(value: number | undefined, suffix = "", voiceActivity = tr
 
 function normalizeSpeechWord(value: string) {
   return value.toLowerCase().replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]/g, "");
+}
+
+const liveSttHallucinationPatterns = [
+  /mbc\s*뉴스/i,
+  /mbc뉴스/i,
+  /이덕영입니다/,
+  /뉴스\s*[가-힣]{2,5}입니다/,
+  /자막\s*제공/i,
+  /시청해\s*주셔서\s*감사합니다/,
+  /구독.*좋아요/,
+  /광고.*후/i,
+  /연합뉴스/i,
+  /한국경제\s*tv/i,
+];
+
+function compactTranscriptText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[.,!?~…'"“”‘’]/g, "");
+}
+
+function isLikelyLiveSttHallucination(text: string) {
+  const compact = compactTranscriptText(text);
+  if (!compact) return true;
+  return liveSttHallucinationPatterns.some((pattern) => pattern.test(text) || pattern.test(compact));
 }
 
 function findTriggeredSpan(text: string, words: string[]) {
@@ -558,6 +592,7 @@ export default function App() {
   }>({ sources: [], timers: [] });
   const demoTranscriptionCacheRef = useRef<Partial<Record<DemoAudioKey, TranscribeResponse>>>({});
   const liveChunkRef = useRef<{ enabled: boolean; inFlight: number; timer?: number }>({ enabled: false, inFlight: 0 });
+  const lastNormalTranscriptRef = useRef<{ text: string; at: number } | null>(null);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -609,7 +644,7 @@ export default function App() {
       timestamp: log.timestamp,
       role: "고객",
       text: log.maskedText,
-      detail: `${eventLabel[log.eventType]} · ${pathLabel[log.detectionPath]} · ${log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[log.source]}`,
+      detail: timelineDetailFor(log),
       tone: log.eventType === "normal" ? "normal" : "risk",
       eventType: log.eventType,
     }));
@@ -1221,6 +1256,10 @@ export default function App() {
       const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`);
       const clean = (transcription.text || "").trim();
       if (!clean) return;
+      if (isLikelyLiveSttHallucination(clean)) {
+        setStatus("OpenAI 청크 STT 대기 중");
+        return;
+      }
 
       const timing = { startedAtMs: chunkStartedAtMs, resultAtMs: performance.now() };
       const raised = Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
@@ -1231,6 +1270,15 @@ export default function App() {
 
       const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
       const exactMasked = scheduleChunkWordMasks(result, transcription.words, chunkStartedAtMs);
+      const normalizedClean = compactTranscriptText(clean);
+      const repeatedNormal =
+        result.eventType === "normal" &&
+        lastNormalTranscriptRef.current?.text === normalizedClean &&
+        Date.now() - lastNormalTranscriptRef.current.at < CFG.normalRepeatDedupeMs;
+      if (result.eventType === "normal") {
+        lastNormalTranscriptRef.current = { text: normalizedClean, at: Date.now() };
+      }
+      if (repeatedNormal) return;
       applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
       if (exactMasked) {
         setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
@@ -1260,7 +1308,11 @@ export default function App() {
 
     const recordOnce = () => {
       if (!liveChunkRef.current.enabled) return;
-      if (Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) > CFG.liveChunkVoiceWindowMs) {
+      const currentFeatures = audioFeaturesRef.current;
+      const hasRecentVoice = Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs;
+      const hasEnoughLevel =
+        (currentFeatures.rmsPercent ?? 0) >= CFG.liveChunkMinLevel || (currentFeatures.peak ?? 0) >= CFG.liveChunkMinPeak;
+      if (!hasRecentVoice || !hasEnoughLevel) {
         scheduleNext(240);
         return;
       }
@@ -1417,8 +1469,8 @@ export default function App() {
       await sleep(options.audioKey ? 260 : 520);
 
       markDemoPhase("detect");
-      setStatus(options.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
-      setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "로컬 사전 감지: 위험 단어 구간 확인");
+      setStatus(options.raised ? "RMS 고성 분석 감지" : "비윤리 표현 즉시 확인");
+      setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "비윤리 표현 감지: 위험 단어 구간 확인");
       const immediateResult = await analyzeDemo(spokenText, options.raised, "immediate");
       setEscalationStage(options.stageKind, options.stage);
       if (lineId) {
@@ -1687,6 +1739,7 @@ export default function App() {
     contextBufferRef.current = [];
     seenEventRef.current.clear();
     lastBeepRef.current = null;
+    lastNormalTranscriptRef.current = null;
     resetEscalation();
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
@@ -1727,6 +1780,7 @@ export default function App() {
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
     liveChunkRef.current = { enabled: false, inFlight: 0 };
+    lastNormalTranscriptRef.current = null;
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     announcingRef.current = false;
