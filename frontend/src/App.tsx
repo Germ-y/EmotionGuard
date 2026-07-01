@@ -35,7 +35,7 @@ type DemoDialogueLine = {
   timestamp: string;
 };
 
-type DemoAudioKey = "parking-normal" | "abuse-profanity";
+type DemoAudioKey = "parking-normal" | "abuse-profanity" | "sexual-ambiguous" | "sexual-harassment";
 
 type DemoAudioSpec = {
   src: string;
@@ -163,6 +163,16 @@ const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
   "parking-normal": {
     src: "/demo-audio/parking-normal.mp3",
     transcript: "주차 단속 문자 받고 전화했어요. 이거 잘못된 것 같습니다.",
+    volume: 0.92,
+  },
+  "sexual-harassment": {
+    src: "/demo-audio/sexual-harassment.mp3",
+    transcript: "목소리 섹시해요. 퇴근하면 기다릴게요.",
+    volume: 0.92,
+  },
+  "sexual-ambiguous": {
+    src: "/demo-audio/sexual-ambiguous.mp3",
+    transcript: "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요.",
     volume: 0.92,
   },
   "abuse-profanity": {
@@ -1542,9 +1552,9 @@ export default function App() {
         }
 
         markDemoPhase("policy");
-        setDemoStep("Policy Engine: 4단계 도달, 상담 종료 시 보고서 반영");
-        setStatus("4단계 도달: 상담 종료 권고");
-        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 권고가 기록됩니다. 보고서는 상담 종료 버튼을 누르면 생성됩니다.", "system", stamp(25));
+        setDemoStep("Policy Engine: 4단계 도달 기록 완료 · 라이브 입력 계속 수신 중");
+        setStatus("4단계 도달 기록 · 라이브 입력 계속 수신 중");
+        pushDemoDialogue("시스템", "4단계 도달 권고가 현재 상담 세션에 기록되었습니다. 마이크 입력은 계속 수신 중입니다.", "system", stamp(25));
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
       }
@@ -1568,13 +1578,14 @@ export default function App() {
         stageKind: "abuse" as const,
       },
       sexual: {
+        audioKey: "sexual-harassment" as const,
         text: "목소리 섹시해요. 퇴근하면 기다릴게요",
         level: 36,
         raised: false,
         title: "성희롱 경고·보고서 데모",
         setup: [
           ["상담사", "복지 서비스 신청 절차 안내드리겠습니다."],
-          ["고객", "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요."],
+          ["고객", "상담사님이 계속 설명해 주세요. 목소리가 마음에 드네요.", "sexual-ambiguous"],
           ["상담사", "민원 내용 중심으로 안내드리겠습니다."],
         ] as Array<[DemoDialogueLine["role"], string, DemoAudioKey?]>,
         systemText: "성희롱 가능 발언으로 경고 기록과 증빙 로그를 준비했습니다.",
@@ -1616,9 +1627,9 @@ export default function App() {
       if (type === "sexual") setEscalationStage("sexual", 2);
 
       markDemoPhase("policy");
-      setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 대기");
-      setStatus("상담 종료 시 보고서 생성");
-      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", stamp(14));
+      setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 후보 반영 완료 · 라이브 입력 계속 수신 중");
+      setStatus("라이브 상담 입력 계속 수신 중");
+      pushDemoDialogue("시스템", "데모 이벤트가 현재 상담 타임라인에 기록되었습니다. 마이크 입력은 계속 수신 중입니다.", "system", stamp(14));
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
     }
