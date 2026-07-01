@@ -285,20 +285,8 @@ button:hover { transform: translateY(-1px); }
   font-variant-numeric: tabular-nums;
   color: #0f172a;
 }
-.stt {
-  order: 1;
-  min-height: 96px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  border-radius: 8px;
-  padding: 15px 16px;
-  color: #3f4b5d;
-  line-height: 1.6;
-  font-size: 16px;
-  font-weight: 650;
-}
 .timestamp-panel {
-  order: 2;
+  order: 1;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcff;
@@ -576,43 +564,43 @@ input[type="range"] { accent-color: var(--blue); }
   font-weight: 850;
 }
 
-.demo-panel {
+.demo-remote {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 30;
+  width: 190px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
+  gap: 8px;
   border: 1px solid #c7d8ff;
   border-radius: 8px;
-  background: var(--blue-soft);
+  background: rgba(255, 255, 255, 0.94);
   padding: 12px;
-  order: 2;
+  box-shadow: 0 18px 44px rgba(28, 39, 58, 0.18);
+  backdrop-filter: blur(10px);
 }
-.demo-panel strong {
-  display: block;
-  margin-bottom: 5px;
-  font-size: 12px;
+.demo-remote strong {
   color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
 }
-.demo-panel span {
-  display: block;
+.demo-remote span {
+  max-height: 48px;
+  overflow: hidden;
   color: #334155;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
 }
-.demo-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.demo-actions button {
-  background: white;
+.demo-remote button {
+  width: 100%;
   border-color: #c7d8ff;
+  background: var(--blue-soft);
   color: var(--blue);
-  padding: 8px 10px;
+  padding: 9px 10px;
   font-size: 12px;
+  text-align: left;
 }
-.demo-actions button:hover {
+.demo-remote button:hover {
   background: #f7faff;
   border-color: #95b6ff;
 }
@@ -753,7 +741,10 @@ h2 { margin: 0 0 10px; font-size: 14px; }
   .stage-grid { grid-template-columns: 1fr; }
   .pipeline { grid-template-columns: 1fr; }
   .live-compare { grid-template-columns: 1fr; }
-  .demo-panel { grid-template-columns: 1fr; }
-  .demo-actions { justify-content: flex-start; }
+  .demo-remote {
+    right: 12px;
+    bottom: 12px;
+    width: min(190px, calc(100% - 24px));
+  }
   .timer { font-size: 52px; }
 }

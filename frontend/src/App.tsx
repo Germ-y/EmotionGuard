@@ -236,7 +236,7 @@ export default function App() {
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(38);
   const [gender, setGender] = useState<"male" | "female">("male");
-  const [interimText, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
+  const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
   const [status, setStatus] = useState("대기 중");
@@ -1028,7 +1028,6 @@ export default function App() {
       <section className="grid">
         <div className="panel main">
           <div className="timer">{mm}:{ss}</div>
-          <div className="stt">{interimText}</div>
           <section className="timestamp-panel">
             <div className="timestamp-head">
               <strong>감지 타임스탬프</strong>
@@ -1097,18 +1096,6 @@ export default function App() {
               </article>
             ))}
           </div>
-          <div className="demo-panel">
-            <div>
-              <strong>데모 모드</strong>
-              <span>{demoStep}</span>
-            </div>
-            <div className="demo-actions">
-              <button onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
-              <button onClick={() => void runDemo("raised")}>고성 완화</button>
-              <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
-              <button onClick={() => void runDemo("escalation")}>4단계 상승</button>
-            </div>
-          </div>
         </div>
 
         <aside className="panel">
@@ -1151,6 +1138,14 @@ export default function App() {
           </section>
         </aside>
       </section>
+      <aside className="demo-remote" aria-label="데모 리모콘">
+        <strong>DEMO</strong>
+        <span>{demoStep}</span>
+        <button onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
+        <button onClick={() => void runDemo("raised")}>고성 완화</button>
+        <button onClick={() => void runDemo("sexual")}>성희롱 경고</button>
+        <button onClick={() => void runDemo("escalation")}>4단계 상승</button>
+      </aside>
     </main>
   );
 }
