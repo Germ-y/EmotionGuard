@@ -66,16 +66,24 @@ type IncidentReport = {
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
-  outputDelay: 1.8,
+  outputDelay: 1.0,
   meterGain: 400,
   beepMinMs: 420,
   beepCharMs: 95,
   beepMaxMs: 1100,
+  beepDedupeMs: 2200,
   beepFrequency: 880,
   beepVolume: 0.18,
+  beepPreRollMs: 120,
+  beepPostRollMs: 140,
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
+  voiceLevelThreshold: 1.2,
+  voicePeakThreshold: 0.006,
+  voiceHoldMs: 520,
+  interimDebounceMs: 90,
+  recognitionRestartMs: 220,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
     "고객님, 마음을 가라앉히시고 차분히 말씀해 주셔야 도움을 드릴 수 있습니다.",
@@ -119,6 +127,7 @@ const sourceLabel: Record<AnalyzeResponse["source"], string> = {
 
 const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
 const REPORT_ARCHIVE_LIMIT = 80;
+const MONITOR_GAIN = 0.72;
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -403,6 +412,7 @@ export default function App() {
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
   const [gender, setGender] = useState<"male" | "female">("male");
+  const [monitorEnabled, setMonitorEnabled] = useState(false);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
@@ -424,6 +434,7 @@ export default function App() {
   const escalationRef = useRef<EscalationState>(initialEscalation());
   const seenEventRef = useRef(new Set<string>());
   const seenStageRef = useRef(new Set<string>());
+  const lastBeepRef = useRef<{ key: string; at: number } | null>(null);
   const announcingRef = useRef(false);
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
@@ -446,6 +457,8 @@ export default function App() {
     timer?: number;
     contextTimer?: number;
     maskTimer?: number;
+    recognitionRestartTimer?: number;
+    lastVoiceActivityTs?: number;
   }>({ raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 });
 
   const counts = useMemo(() => {
@@ -539,6 +552,13 @@ export default function App() {
     return () => window.removeEventListener("popstate", syncRoute);
   }, []);
 
+  useEffect(() => {
+    const { ctx, outGain } = audioRef.current;
+    if (!ctx || !outGain) return;
+    outGain.gain.cancelScheduledValues(ctx.currentTime);
+    outGain.gain.setTargetAtTime(monitorEnabled ? MONITOR_GAIN : 0, ctx.currentTime, 0.03);
+  }, [monitorEnabled]);
+
   async function startAudio() {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -553,10 +573,10 @@ export default function App() {
     source.connect(analyser);
 
     const jungle = new Jungle(ctx);
-    const outputCursorDelay = ctx.createDelay(2);
+    const outputCursorDelay = ctx.createDelay(Math.max(3, CFG.outputDelay + 0.4));
     const outGain = ctx.createGain();
     outputCursorDelay.delayTime.value = CFG.outputDelay;
-    outGain.gain.value = 1;
+    outGain.gain.value = monitorEnabled ? MONITOR_GAIN : 0;
 
     source.connect(jungle.input);
     jungle.output.connect(outputCursorDelay);
@@ -590,7 +610,10 @@ export default function App() {
       setLevel((prev) => prev + (nextLevel - prev) * 0.35);
       const peak = buffer.reduce((max, item) => Math.max(max, Math.abs(item)), 0);
       const pitch = current.ctx ? estimatePitch(buffer, current.ctx.sampleRate) : { pitchHz: undefined, confidence: 0 };
-      const voiceActivity = nextLevel >= 3 || peak >= 0.012;
+      const rawVoiceActivity = nextLevel >= CFG.voiceLevelThreshold || peak >= CFG.voicePeakThreshold;
+      if (rawVoiceActivity) current.lastVoiceActivityTs = Date.now();
+      const voiceActivity = rawVoiceActivity || Date.now() - (current.lastVoiceActivityTs ?? 0) < CFG.voiceHoldMs;
+      const offset = pitchOffsetForLevel(nextLevel, threshold, gender);
       const nextFeatures: AudioFeatures = {
         rms: rounded(rms, 4),
         rmsPercent: rounded(nextLevel, 1),
@@ -606,11 +629,20 @@ export default function App() {
       if (t - featureUiTsRef.current > 220) {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
+        const nextStatus = offset < 0
+          ? "고성 구간 피치/볼륨 완화"
+          : muted
+            ? "욕설 단어 삐 처리"
+            : voiceActivity
+              ? "음성 입력 감지"
+              : "음성 입력 대기 중";
+        setStatus((prev) => {
+          const keepProcessingStatus = prev.includes("분석") || prev.includes("판단") || prev.includes("보고서") || prev.includes("삐 처리 중");
+          return keepProcessingStatus && voiceActivity ? prev : nextStatus;
+        });
       }
 
-      const offset = pitchOffsetForLevel(nextLevel, threshold, gender);
       current.jungle.setPitchOffset(offset);
-      setStatus(offset < 0 ? "고성 구간 피치/볼륨 완화" : muted ? "욕설 단어 삐 처리" : "보호된 상담사 청취 출력");
 
       if (!announcingRef.current && nextLevel >= threshold) {
         current.raisedSustainMs += dt;
@@ -662,7 +694,7 @@ export default function App() {
 
     const utteranceMs = clamp(timing.resultAtMs - timing.startedAtMs, 450, 5000);
     const ratio = clamp(span.index / Math.max(1, text.length), 0, 0.92);
-    const wordInputAtMs = timing.startedAtMs + utteranceMs * ratio;
+    const wordInputAtMs = timing.startedAtMs + utteranceMs * ratio - CFG.beepPreRollMs;
     const wordOutputAtMs = wordInputAtMs + CFG.outputDelay * 1000;
     const delaySeconds = Math.max(0.04, (wordOutputAtMs - performance.now()) / 1000);
 
@@ -671,8 +703,13 @@ export default function App() {
 
   function beepProfanitySegment(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
     markDemoPhase("mask");
+    const beepKey = `${result.eventType}:${result.triggeredWords.join("|") || result.maskedText || text}`;
+    const nowMs = Date.now();
+    if (lastBeepRef.current?.key === beepKey && nowMs - lastBeepRef.current.at < CFG.beepDedupeMs) return;
+    lastBeepRef.current = { key: beepKey, at: nowMs };
+
     const { ctx, outGain } = audioRef.current;
-    const durationMs = beepDurationFor(result);
+    const durationMs = beepDurationFor(result) + CFG.beepPreRollMs + CFG.beepPostRollMs;
     if (!ctx || !outGain) {
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       setMuted(true);
@@ -695,7 +732,7 @@ export default function App() {
     gain.setValueAtTime(gain.value, Math.max(ctx.currentTime, startAt - 0.01));
     gain.linearRampToValueAtTime(0.0001, startAt + 0.025);
     gain.setValueAtTime(0.0001, endAt);
-    gain.linearRampToValueAtTime(1, endAt + 0.05);
+    gain.linearRampToValueAtTime(monitorEnabled ? MONITOR_GAIN : 0, endAt + 0.05);
     playBeep(ctx, startAt, durationMs);
 
     setMuted(true);
@@ -903,7 +940,7 @@ export default function App() {
     interimCheckRef.current.timer = window.setTimeout(() => {
       interimCheckRef.current.lastText = clean;
       void processText(clean, "immediate", timing);
-    }, 360);
+    }, CFG.interimDebounceMs);
   }
 
   async function analyzeDemo(text: string, raised: boolean, analysisMode: AnalysisMode) {
@@ -1142,16 +1179,37 @@ export default function App() {
     }
 
     const recognition = new Recognition();
+    let recognitionRunning = false;
+
+    const startSafely = (delay = 0) => {
+      if (audioRef.current.recognition !== recognition) return;
+      if (audioRef.current.recognitionRestartTimer) {
+        window.clearTimeout(audioRef.current.recognitionRestartTimer);
+      }
+      audioRef.current.recognitionRestartTimer = window.setTimeout(() => {
+        if (audioRef.current.recognition !== recognition || recognitionRunning) return;
+        try {
+          recognition.start();
+          recognitionRunning = true;
+          setStatus("음성 입력 대기 중");
+        } catch {
+          recognitionRunning = false;
+          startSafely(CFG.recognitionRestartMs * 2);
+        }
+      }, delay);
+    };
+
     recognition.lang = "ko-KR";
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    recognition.maxAlternatives = 3;
     recognition.onresult = (event) => {
       if (announcingRef.current) return;
       const resultAtMs = performance.now();
       if (!speechStartAtRef.current) speechStartAtRef.current = resultAtMs - 650;
       const timing = { startedAtMs: speechStartAtRef.current, resultAtMs };
       markDemoPhase("input");
+      setStatus("음성 입력 감지");
       let interim = "";
       let final = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -1172,22 +1230,28 @@ export default function App() {
     };
     recognition.onspeechstart = () => {
       speechStartAtRef.current = performance.now();
+      setStatus("음성 입력 감지");
     };
     recognition.onspeechend = () => {
       speechStartAtRef.current = null;
     };
     recognition.onend = () => {
-      if (audioRef.current.recognition) recognition.start();
+      recognitionRunning = false;
+      startSafely(CFG.recognitionRestartMs);
     };
     recognition.onerror = (event) => {
+      recognitionRunning = false;
       if (event.error === "no-speech") {
         setStatus("음성 입력 대기 중");
+        startSafely(CFG.recognitionRestartMs);
         return;
       }
+      if (event.error === "aborted") return;
       setError(`음성 인식 오류: ${event.error}`);
+      startSafely(CFG.recognitionRestartMs * 2);
     };
-    recognition.start();
     audioRef.current.recognition = recognition;
+    startSafely();
   }
 
   async function startSession() {
@@ -1233,6 +1297,7 @@ export default function App() {
     if (state.contextTimer) clearInterval(state.contextTimer);
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     if (state.maskTimer) clearTimeout(state.maskTimer);
+    if (state.recognitionRestartTimer) clearTimeout(state.recognitionRestartTimer);
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
@@ -1337,6 +1402,12 @@ export default function App() {
                 <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
                 <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
               </div>
+            </div>
+            <div className="monitor-control">
+              <span>청취 모니터</span>
+              <button className={monitorEnabled ? "selected" : ""} onClick={() => setMonitorEnabled((prev) => !prev)}>
+                {monitorEnabled ? "켜짐" : "꺼짐"}
+              </button>
             </div>
           </section>
           <div className="meter">

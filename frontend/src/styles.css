@@ -528,7 +528,7 @@ button:hover { transform: translateY(-1px); }
 .guard-panel {
   order: 1;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.35fr) auto;
+  grid-template-columns: minmax(170px, 1fr) minmax(210px, 1.2fr) auto auto;
   gap: 10px;
   align-items: center;
   border: 1px solid var(--line);
@@ -538,7 +538,8 @@ button:hover { transform: translateY(-1px); }
 }
 .guard-state,
 .threshold-control,
-.voice-control {
+.voice-control,
+.monitor-control {
   min-height: 40px;
   display: flex;
   align-items: center;
@@ -576,7 +577,8 @@ button:hover { transform: translateY(-1px); }
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.voice-control {
+.voice-control,
+.monitor-control {
   justify-content: flex-end;
 }
 input[type="range"] { accent-color: var(--blue); }
@@ -597,6 +599,19 @@ input[type="range"] { accent-color: var(--blue); }
 .segmented .selected {
   background: var(--blue);
   color: white;
+}
+.monitor-control button {
+  min-width: 62px;
+  border-color: var(--line-strong);
+  background: white;
+  color: var(--muted);
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.monitor-control button.selected {
+  border-color: #c7d8ff;
+  background: var(--blue-soft);
+  color: var(--blue);
 }
 .demo-remote {
   position: fixed;
