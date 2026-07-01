@@ -160,7 +160,7 @@ button:hover { transform: translateY(-1px); }
 .process-step.done::before {
   border-color: var(--blue);
   background: var(--blue);
-  box-shadow: 0 0 0 4px rgba(29, 78, 216, 0.08);
+  box-shadow: 0 0 0 5px rgba(29, 78, 216, 0.1);
 }
 .process-step.active {
   background: transparent;
@@ -169,15 +169,17 @@ button:hover { transform: translateY(-1px); }
 .process-step.active::before {
   border-color: var(--blue);
   background: var(--blue);
-  box-shadow: 0 0 0 6px rgba(29, 78, 216, 0.12);
+  box-shadow: 0 0 0 5px rgba(29, 78, 216, 0.1);
 }
 .process-step strong {
   display: block;
   color: var(--muted);
   font-size: 12px;
 }
-.process-step.active strong { color: var(--text); }
-.process-step.done strong { color: var(--text); }
+.process-step.active strong,
+.process-step.done strong {
+  color: var(--text);
+}
 .process-step span {
   display: none;
   color: var(--muted);
