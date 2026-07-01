@@ -208,7 +208,7 @@ function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPr
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
-        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.maskedText}`)
+        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.text}`)
         .join("\n")
     : "감지된 특이 민원 발화 없음";
 
@@ -1030,17 +1030,16 @@ export default function App() {
           <div className="timer">{mm}:{ss}</div>
           <section className="timestamp-panel">
             <div className="timestamp-head">
-              <strong>감지 타임스탬프</strong>
+              <strong>문장 타임스탬프</strong>
               <span>상담 시간 기준 누적</span>
             </div>
             <div className="timestamp-list" ref={timelineRef}>
-              {timelineEntries.length === 0 && <p className="empty">감지되면 [00:00] 형식으로 바로 기록됩니다.</p>}
+              {timelineEntries.length === 0 && <p className="empty">문장이 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
               {timelineEntries.map((log) => (
-                <article key={log.id} className={`timestamp-row ${log.eventType}`}>
+                <article key={log.id} className={`timestamp-row ${log.eventType}`} data-original={log.text}>
                   <time>[{log.timestamp}]</time>
                   <div>
-                    <strong>{eventLabel[log.eventType]} 감지 · {pathLabel[log.detectionPath]}</strong>
-                    <p>{log.maskedText}</p>
+                    <strong>원문 문장 비공개 기록됨 · {pathLabel[log.detectionPath]}</strong>
                     <small>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · {log.source}</small>
                   </div>
                 </article>
@@ -1127,9 +1126,9 @@ export default function App() {
                 <div className="report-evidence">
                   {report.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
                   {report.evidence.map((item) => (
-                    <article key={item.id}>
+                    <article key={item.id} data-original={item.text}>
                       <small>[{item.timestamp}] · {eventLabel[item.eventType]} · {pathLabel[item.detectionPath]}</small>
-                      <p>{item.maskedText}</p>
+                      <p>원문 문장 비공개 기록됨</p>
                     </article>
                   ))}
                 </div>
