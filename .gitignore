@@ -8,7 +8,11 @@ __pycache__/
 *.log
 data/aihub/
 data/kemdy20/
+data/skt/
+SKT데이터/
 .tools/
 download.tar
 *KEMDy*.zip
+*.tar.irx*
+*.irx*
 backend/app/data/dictionaries.aihub.json
