@@ -19,6 +19,8 @@ def decide_policy_actions(event_type: EventType, analysis: AnalysisResult, mode:
     if mode == "immediate":
         if event_type in {"abuse", "abuse-raised"}:
             actions.append("mute")
+        if event_type == "sexual" and analysis.source == "local" and analysis.triggeredWords:
+            actions.append("mute")
         if event_type in {"raised", "abuse-raised"}:
             actions.extend(["pitch_shift", "volume_reduce"])
 

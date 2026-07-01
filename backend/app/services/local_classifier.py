@@ -1,61 +1,90 @@
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 
 from app.models import AnalysisResult
 
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "dictionaries.json"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_PATH = DATA_DIR / "dictionaries.json"
+AIHUB_DATA_PATH = DATA_DIR / "dictionaries.aihub.json"
+DICTIONARY_KEYS = [
+    "abuse_words",
+    "abuse_exceptions",
+    "sexual_words",
+    "sexual_exceptions",
+    "high_risk_words",
+]
 
 
 @lru_cache(maxsize=1)
 def load_dictionaries() -> dict[str, list[str]]:
     with DATA_PATH.open(encoding="utf-8-sig") as file:
-        return json.load(file)
+        data = json.load(file)
+
+    if AIHUB_DATA_PATH.exists():
+        with AIHUB_DATA_PATH.open(encoding="utf-8-sig") as file:
+            generated = json.load(file)
+        for key in DICTIONARY_KEYS:
+            generated_values = generated.get(key, [])
+            if not isinstance(generated_values, list):
+                generated_values = []
+            values = [*data.get(key, []), *generated_values]
+            data[key] = list(dict.fromkeys(value for value in values if isinstance(value, str) and value.strip()))
+
+    return data
 
 
 def normalize(text: str) -> str:
     return "".join(text.lower().split())
 
 
-def abuse_words_in(text: str) -> list[str]:
+def _words_in(text: str, word_key: str, exception_key: str) -> list[str]:
     data = load_dictionaries()
     original = text.lower()
     compact = normalize(text)
 
-    for exception in data["abuse_exceptions"]:
+    for exception in data[exception_key]:
         original = original.replace(exception, " ")
         compact = compact.replace(normalize(exception), "")
 
-    from_original = [word for word in data["abuse_words"] if word in original]
-    from_compact = [word for word in data["abuse_words"] if normalize(word) in compact]
+    from_original = [word for word in data[word_key] if word.lower() in original]
+    from_compact = [word for word in data[word_key] if normalize(word) in compact]
 
     return list(dict.fromkeys([*from_original, *from_compact]))
 
 
+def abuse_words_in(text: str) -> list[str]:
+    return _words_in(text, "abuse_words", "abuse_exceptions")
+
+
+def sexual_words_in(text: str) -> list[str]:
+    return _words_in(text, "sexual_words", "sexual_exceptions")
+
+
 def is_local_sexual(text: str) -> bool:
-    data = load_dictionaries()
-    compact = normalize(text)
-
-    if any(normalize(exception) in compact for exception in data["sexual_exceptions"]):
-        return False
-
-    return any(normalize(word) in compact for word in data["sexual_words"])
+    return bool(sexual_words_in(text))
 
 
-def mask_abuse(text: str) -> str:
+def mask_sensitive(text: str) -> str:
     data = load_dictionaries()
     masked = text
-    placeholders = [(f"\x00{index}\x00", exception) for index, exception in enumerate(data["abuse_exceptions"])]
+    exceptions = list(dict.fromkeys([*data["abuse_exceptions"], *data["sexual_exceptions"]]))
+    protected = [(f"\x00{index}\x00", exception) for index, exception in enumerate(exceptions)]
 
-    for key, exception in placeholders:
+    for key, exception in protected:
         masked = masked.replace(exception, key)
-    for word in data["abuse_words"]:
-        masked = masked.replace(word, "*" * len(word))
-    for key, exception in placeholders:
+    for word in list(dict.fromkeys([*data["abuse_words"], *data["sexual_words"]])):
+        masked = re.sub(re.escape(word), lambda match: "*" * len(match.group(0)), masked, flags=re.IGNORECASE)
+    for key, exception in protected:
         masked = masked.replace(key, exception)
 
     return masked
+
+
+def mask_abuse(text: str) -> str:
+    return mask_sensitive(text)
 
 
 def _has_any(compact: str, words: list[str]) -> bool:
@@ -172,7 +201,8 @@ def normal_result() -> AnalysisResult:
 
 
 def classify_local(text: str) -> AnalysisResult | None:
-    if is_local_sexual(text):
+    sexual_triggered = sexual_words_in(text)
+    if sexual_triggered:
         return AnalysisResult(
             abusive=True,
             severity="severe",
@@ -180,7 +210,7 @@ def classify_local(text: str) -> AnalysisResult | None:
             emotion="threatening",
             sexual=True,
             source="local",
-            triggeredWords=[],
+            triggeredWords=sexual_triggered,
         )
 
     triggered = abuse_words_in(text)

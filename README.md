@@ -35,8 +35,8 @@ EMOTION GUARD는 통화가 진행되는 동안 음성 입력을 실시간으로 
 | 영역 | 활용 도구 |
 | --- | --- |
 | 맥락 판단 | OpenAI GPT API 또는 Claude API(키 설정 시), fallback 보수 판단(키 없음) |
-| 즉시 차단 | 로컬 욕설 사전 223개, 성희롱 사전 391개 |
-| 학습·탐지 보조 | 공개 욕설 감지 데이터셋 |
+| 즉시 차단 | 로컬 욕설 사전 223개, 성희롱 사전 391개, 선택적 AI-Hub 확장 사전 |
+| 학습·탐지 보조 | AI-Hub 텍스트 윤리검증 데이터 기반 후보 어휘 추출 |
 | 음성 처리 | Web Audio API, Jungle Pitch Shifter |
 | 업무 자동화 | 보고서 자동 생성, 음량 시각화, 단계별 경고 모듈 |
 
@@ -80,6 +80,7 @@ Policy Engine
 ├── backend
 │   ├── app
 │   │   ├── data/dictionaries.json
+│   │   ├── data/dictionaries.aihub.json  # gitignore, optional generated file
 │   │   ├── routers/analyze.py
 │   │   └── services
 │   │       ├── claude.py
@@ -89,8 +90,12 @@ Policy Engine
 │   │       └── policy_engine.py
 │   └── .env.example
 ├── docs
+│   ├── aihub-dictionary.md
 │   ├── architecture.md
 │   └── judgment-criteria.md
+├── scripts
+│   ├── aihub_download_ethics.sh
+│   └── extract_aihub_ethics_dictionary.py
 ├── frontend
 │   └── src
 │       ├── App.tsx
@@ -117,6 +122,16 @@ OPENAI_MODEL=gpt-4.1-mini
 ```
 
 Claude를 대신 쓰고 싶다면 `ANTHROPIC_API_KEY`를 설정할 수 있습니다. 두 키가 모두 있으면 OpenAI GPT를 우선 사용합니다.
+
+### AI-Hub 사전 확장
+
+AI-Hub `텍스트 윤리검증 데이터`를 내려받았거나 루트에 `download.tar`를 둔 경우, 아래 명령으로 로컬 확장 사전을 만들 수 있습니다.
+
+```bash
+python scripts/extract_aihub_ethics_dictionary.py download.tar
+```
+
+생성되는 `backend/app/data/dictionaries.aihub.json`은 gitignore 대상이며, 존재할 때만 백엔드가 기본 사전에 병합합니다. WSL에서 AI-Hub API로 직접 받는 절차는 [docs/aihub-dictionary.md](docs/aihub-dictionary.md)에 정리했습니다.
 
 백엔드와 프론트엔드를 각각 실행합니다.
 

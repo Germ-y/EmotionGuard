@@ -6,3 +6,7 @@ __pycache__/
 .env
 .env.local
 *.log
+data/aihub/
+.tools/
+download.tar
+backend/app/data/dictionaries.aihub.json
