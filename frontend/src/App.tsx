@@ -707,7 +707,7 @@ export default function App() {
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
   const [gender, setGender] = useState<"male" | "female">("male");
-  const [monitorEnabled, setMonitorEnabled] = useState(false);
+  const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
@@ -2117,11 +2117,11 @@ export default function App() {
     setLitPhases([]);
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
-    setMonitorEnabled(false);
+    setMonitorEnabled(true);
     setActive(true);
 
     try {
-      await startAudio(false);
+      await startAudio(true);
       startOpenAIChunkStt();
       startRecognition();
       speak("안녕하세요. 원활한 상담을 위해 통화 내용이 녹음됩니다.");
