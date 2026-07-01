@@ -102,6 +102,10 @@ const CFG = {
   voiceHoldMs: 520,
   interimDebounceMs: 90,
   recognitionRestartMs: 220,
+  liveChunkMs: 1000,
+  liveChunkMaxInflight: 2,
+  liveChunkMinBytes: 900,
+  liveChunkVoiceWindowMs: 1600,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
     "고객님, 마음을 가라앉히시고 차분히 말씀해 주셔야 도움을 드릴 수 있습니다.",
@@ -553,6 +557,7 @@ export default function App() {
     timers: number[];
   }>({ sources: [], timers: [] });
   const demoTranscriptionCacheRef = useRef<Partial<Record<DemoAudioKey, TranscribeResponse>>>({});
+  const liveChunkRef = useRef({ nextStartedAtMs: 0, inFlight: 0 });
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -566,6 +571,7 @@ export default function App() {
     raisedSustainMs: number;
     raisedLatched: boolean;
     lastRaisedTs: number;
+    mediaRecorder?: MediaRecorder;
     recognition?: SpeechRecognition;
     timer?: number;
     contextTimer?: number;
@@ -946,6 +952,55 @@ export default function App() {
     return ctx.currentTime + delaySeconds;
   }
 
+  function applyOutputMaskSegments(segments: Array<{ startAt: number; endAt: number }>) {
+    const { ctx, outGain } = audioRef.current;
+    if (!ctx || !outGain || segments.length === 0) return false;
+
+    const baseGain = monitorEnabled ? MONITOR_GAIN : 0;
+    const nowTime = ctx.currentTime;
+    const gain = outGain.gain;
+    gain.cancelScheduledValues(nowTime);
+    gain.setValueAtTime(gain.value, nowTime);
+
+    let latestEndAt = nowTime;
+    segments.forEach((segment) => {
+      const startAt = Math.max(nowTime + 0.02, segment.startAt);
+      const endAt = Math.max(startAt + 0.18, segment.endAt);
+      latestEndAt = Math.max(latestEndAt, endAt);
+
+      gain.setValueAtTime(baseGain, Math.max(nowTime, startAt - 0.015));
+      gain.linearRampToValueAtTime(0.0001, startAt + 0.025);
+      gain.setValueAtTime(0.0001, endAt);
+      gain.linearRampToValueAtTime(baseGain, endAt + 0.05);
+      playBeep(ctx, startAt, Math.max(180, (endAt - startAt) * 1000));
+    });
+
+    setMuted(true);
+    if (audioRef.current.maskTimer) window.clearTimeout(audioRef.current.maskTimer);
+    audioRef.current.maskTimer = window.setTimeout(() => setMuted(false), Math.max(0, (latestEndAt - nowTime) * 1000 + 80));
+    return true;
+  }
+
+  function scheduleChunkWordMasks(result: AnalyzeResponse, words: TranscriptionWord[], chunkStartedAtMs: number) {
+    if (!result.policyActions.includes("mute")) return false;
+    const { ctx } = audioRef.current;
+    if (!ctx) return false;
+
+    const segments = wordTimestampSegments(words, result.triggeredWords);
+    if (segments.length === 0) return false;
+
+    const nowMs = performance.now();
+    const scheduled = segments.map((segment) => {
+      const outputStartMs = chunkStartedAtMs + segment.start * 1000 + CFG.outputDelay * 1000;
+      const outputEndMs = chunkStartedAtMs + segment.end * 1000 + CFG.outputDelay * 1000;
+      const startAt = ctx.currentTime + Math.max(0.02, (outputStartMs - nowMs) / 1000);
+      const endAt = ctx.currentTime + Math.max(0.2, (outputEndMs - nowMs) / 1000);
+      return { startAt, endAt };
+    });
+
+    return applyOutputMaskSegments(scheduled);
+  }
+
   function beepProfanitySegment(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
     markDemoPhase("mask");
     const beepKey = `${result.eventType}:${result.triggeredWords.join("|") || result.maskedText || text}`;
@@ -969,20 +1024,7 @@ export default function App() {
     }
 
     const startAt = estimateBeepStart(result, text, timing, ctx);
-    const endAt = startAt + durationMs / 1000;
-    const gain = outGain.gain;
-
-    gain.cancelScheduledValues(ctx.currentTime);
-    gain.setValueAtTime(gain.value, ctx.currentTime);
-    gain.setValueAtTime(gain.value, Math.max(ctx.currentTime, startAt - 0.01));
-    gain.linearRampToValueAtTime(0.0001, startAt + 0.025);
-    gain.setValueAtTime(0.0001, endAt);
-    gain.linearRampToValueAtTime(monitorEnabled ? MONITOR_GAIN : 0, endAt + 0.05);
-    playBeep(ctx, startAt, durationMs);
-
-    setMuted(true);
-    if (audioRef.current.maskTimer) window.clearTimeout(audioRef.current.maskTimer);
-    audioRef.current.maskTimer = window.setTimeout(() => setMuted(false), Math.max(0, (endAt - ctx.currentTime) * 1000 + 80));
+    applyOutputMaskSegments([{ startAt, endAt: startAt + durationMs / 1000 }]);
   }
 
   function speak(_text: string) {
@@ -1052,7 +1094,12 @@ export default function App() {
     });
   }
 
-  function applyPolicy(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
+  function applyPolicy(
+    result: AnalyzeResponse,
+    text: string,
+    timing?: SpeechTiming,
+    options: { suppressImmediateMask?: boolean } = {},
+  ) {
     advanceEscalation(result, text);
     if (result.detectionPath === "context_snapshot") markDemoPhase("context");
     if (
@@ -1078,7 +1125,7 @@ export default function App() {
     const logged = shouldLog ? appendLog(result, text) : true;
 
     if (result.detectionPath === "immediate") {
-      if (result.policyActions.includes("mute")) beepProfanitySegment(result, text, timing);
+      if (result.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(result, text, timing);
       if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
     } else if (result.eventType !== "normal") {
       const engine = result.source === "openai" ? "GPT" : result.source === "claude" ? "Claude" : "문맥 엔진";
@@ -1172,6 +1219,66 @@ export default function App() {
     } catch {
       setError("분석 서버 연결에 실패했습니다. backend 서버가 실행 중인지 확인해주세요.");
     }
+  }
+
+  async function processLiveAudioChunk(blob: Blob, chunkStartedAtMs: number) {
+    if (liveChunkRef.current.inFlight >= CFG.liveChunkMaxInflight) return;
+    liveChunkRef.current.inFlight += 1;
+
+    try {
+      const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`);
+      const clean = (transcription.text || "").trim();
+      if (!clean) return;
+
+      const timing = { startedAtMs: chunkStartedAtMs, resultAtMs: performance.now() };
+      const raised = Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
+      const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
+      markDemoPhase("detect");
+      setStatus("OpenAI 1초 청크 STT 분석 중");
+      pushContext(clean);
+
+      const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
+      const exactMasked = scheduleChunkWordMasks(result, transcription.words, chunkStartedAtMs);
+      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked });
+      if (exactMasked) {
+        setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
+        setDemoStep("OpenAI 청크 STT가 단어 시작/끝 시간을 받아 출력 버퍼에 마스크를 적용했습니다.");
+      }
+    } catch {
+      setStatus("OpenAI 청크 STT 대기 중");
+    } finally {
+      liveChunkRef.current.inFlight = Math.max(0, liveChunkRef.current.inFlight - 1);
+    }
+  }
+
+  function startOpenAIChunkStt() {
+    const stream = audioRef.current.stream;
+    if (!stream || typeof MediaRecorder === "undefined") return false;
+
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    liveChunkRef.current = { nextStartedAtMs: performance.now(), inFlight: 0 };
+
+    recorder.ondataavailable = (event) => {
+      const chunkStartedAtMs = liveChunkRef.current.nextStartedAtMs;
+      liveChunkRef.current.nextStartedAtMs += CFG.liveChunkMs;
+      if (event.data.size < CFG.liveChunkMinBytes) return;
+      if (Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) > CFG.liveChunkVoiceWindowMs) return;
+      void processLiveAudioChunk(event.data, chunkStartedAtMs);
+    };
+    recorder.onerror = () => {
+      setStatus("OpenAI 청크 STT 오류 - 브라우저 STT로 전환");
+      startRecognition();
+    };
+    recorder.start(CFG.liveChunkMs);
+    audioRef.current.mediaRecorder = recorder;
+    setStatus("OpenAI 1초 청크 STT 대기 중");
+    setDemoStep("라이브 음성을 1초 단위로 STT하고 단어 타임스탬프로 삐 처리합니다.");
+    return true;
   }
 
   function queueInterimImmediate(text: string, timing: SpeechTiming) {
@@ -1552,7 +1659,7 @@ export default function App() {
 
     try {
       await startAudio(true);
-      startRecognition();
+      if (!startOpenAIChunkStt()) startRecognition();
       speak("안녕하세요. 원활한 상담을 위해 통화 내용이 녹음됩니다.");
       audioRef.current.timer = window.setInterval(() => setElapsed((prev) => prev + 1), 1000);
       audioRef.current.contextTimer = window.setInterval(() => {
@@ -1566,6 +1673,7 @@ export default function App() {
 
   function stopSession() {
     const state = audioRef.current;
+    if (state.mediaRecorder?.state === "recording") state.mediaRecorder.stop();
     state.recognition?.stop();
     state.stream?.getTracks().forEach((track) => track.stop());
     if (state.raf) cancelAnimationFrame(state.raf);
@@ -1577,6 +1685,7 @@ export default function App() {
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
+    liveChunkRef.current = { nextStartedAtMs: 0, inFlight: 0 };
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     announcingRef.current = false;
