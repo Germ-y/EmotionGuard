@@ -236,6 +236,7 @@ export default function App() {
   const [contextStatus, setContextStatus] = useState("3초 문맥 스냅샷 대기");
   const [demoStep, setDemoStep] = useState("데모 버튼을 누르면 즉시 보호 경로와 3초 문맥 경로가 순서대로 표시됩니다.");
   const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
+  const [litPhases, setLitPhases] = useState<DemoPhase[]>([]);
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [immediatePreview, setImmediatePreview] = useState<ProtectionPreview>(() => initialPreview("immediate"));
   const [contextPreview, setContextPreview] = useState<ProtectionPreview>(() => initialPreview("context_snapshot"));
@@ -280,9 +281,18 @@ export default function App() {
 
   const abuseStage = escalation.abuse;
   const sexualStage = escalation.sexual;
-  const activePhaseIndex = demoProcessSteps.findIndex((step) => step.id === demoPhase);
+  const litPhaseSet = useMemo(() => new Set(litPhases), [litPhases]);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
+
+  function markDemoPhase(phase: DemoPhase) {
+    setDemoPhase(phase);
+    if (phase === "idle") {
+      setLitPhases([]);
+      return;
+    }
+    setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
+  }
 
   async function startAudio() {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -341,6 +351,8 @@ export default function App() {
         if (current.raisedSustainMs >= CFG.raisedSustainMs && !current.raisedLatched) {
           current.raisedLatched = true;
           current.lastRaisedTs = Date.now();
+          markDemoPhase("detect");
+          markDemoPhase("mask");
           setInterimText("RMS 고성 분석 감지 - 출력 커서에서 음정을 낮춰 전달합니다.");
           setImmediatePreview({
             mode: "immediate",
@@ -402,7 +414,7 @@ export default function App() {
   }
 
   function beepProfanitySegment(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
-    setDemoPhase("mask");
+    markDemoPhase("mask");
     const { ctx, outGain } = audioRef.current;
     const durationMs = beepDurationFor(result);
     if (!ctx || !outGain) {
@@ -495,6 +507,21 @@ export default function App() {
   function applyPolicy(result: AnalyzeResponse, text: string, timing?: SpeechTiming) {
     updatePreview(result, text);
     advanceEscalation(result, text);
+    if (result.detectionPath === "context_snapshot") markDemoPhase("context");
+    if (
+      result.policyActions.includes("mute") ||
+      result.policyActions.includes("pitch_shift") ||
+      result.policyActions.includes("volume_reduce")
+    ) {
+      markDemoPhase("mask");
+    }
+    if (
+      result.policyActions.includes("warn_tts") ||
+      result.policyActions.includes("escalate") ||
+      result.policyActions.includes("report")
+    ) {
+      markDemoPhase("policy");
+    }
 
     const shouldLog =
       result.eventType !== "normal" ||
@@ -594,6 +621,7 @@ export default function App() {
   async function processText(text: string, analysisMode: AnalysisMode, timing?: SpeechTiming) {
     const clean = text.trim();
     if (!clean) return;
+    markDemoPhase(analysisMode === "immediate" ? "detect" : "context");
 
     const raised = analysisMode === "immediate" && Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
     try {
@@ -609,7 +637,7 @@ export default function App() {
     if (!clean || announcingRef.current) return;
     if (clean === interimCheckRef.current.lastText) return;
 
-    setDemoPhase("detect");
+    markDemoPhase("detect");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview((prev) => ({
       ...prev,
@@ -648,7 +676,7 @@ export default function App() {
     setReport(null);
     setCopyStatus("");
     sessionStartedAtRef.current = new Date();
-    setDemoPhase("idle");
+    markDemoPhase("idle");
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
     interimCheckRef.current.lastText = "";
@@ -669,25 +697,25 @@ export default function App() {
         for (let index = 0; index < lines.length; index += 1) {
           const stage = index + 1;
           const text = lines[index];
-          setDemoPhase("input");
+          markDemoPhase("input");
           setInterimText(text);
           setLevel(42 + stage * 9);
           setDemoStep(`${stage}단계 진입: 고객 발화 입력`);
           setStatus("20ms 오디오 프레임 → Ring Buffer 적재");
           await sleep(420);
 
-          setDemoPhase("detect");
+          markDemoPhase("detect");
           setDemoStep(`${stage}단계 진입: 로컬 욕설 사전 감지`);
           await analyzeDemo(text, stage >= 3, "immediate");
           setEscalationStage("abuse", stage);
           await sleep(620);
 
-          setDemoPhase("mask");
+          markDemoPhase("mask");
           setDemoStep(`${stage}단계 진입: 욕설 단어 구간 비프음 마스크 적용`);
           await sleep(520);
         }
 
-        setDemoPhase("policy");
+        markDemoPhase("policy");
         setDemoStep("Policy Engine: 폭언/고성 4단계 점등 완료, 상담 종료 안내 단계");
         generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 16);
       } catch {
@@ -718,7 +746,7 @@ export default function App() {
     }[type];
 
     try {
-      setDemoPhase("input");
+      markDemoPhase("input");
       setDemoStep(`${script.title}: 고객 음성 입력`);
       setInterimText(script.text);
       setLevel(script.level);
@@ -737,14 +765,14 @@ export default function App() {
       });
       await sleep(650);
 
-      setDemoPhase("detect");
+      markDemoPhase("detect");
       setDemoStep("즉시 감지 경로: RMS/STT 인터림/로컬 사전 확인");
       setStatus(script.raised ? "RMS 고성 분석 감지" : "로컬 사전 즉시 확인");
       await analyzeDemo(script.text, script.raised, "immediate");
       setEscalationStage(type === "sexual" ? "sexual" : "abuse", 1);
       await sleep(900);
 
-      setDemoPhase("mask");
+      markDemoPhase("mask");
       setDemoStep(
         type === "abuse"
           ? "출력 커서: 욕설 단어 구간에만 비프음 마스크 적용"
@@ -761,14 +789,14 @@ export default function App() {
       );
       await sleep(900);
 
-      setDemoPhase("context");
+      markDemoPhase("context");
       setDemoStep("3초 문맥 판단 경로: Claude 스냅샷 분석 결과를 정책 엔진에 반영");
       setContextStatus("3초 문맥 스냅샷 분석 중");
       await analyzeDemo(script.text, false, "context_snapshot");
       if (type === "sexual") setEscalationStage("sexual", 2);
       await sleep(600);
 
-      setDemoPhase("policy");
+      markDemoPhase("policy");
       setDemoStep("Policy Engine: 단계 상승, 경고, 로그, 보고서 액션 결정 완료");
       generateReport("데모 종료", escalationRef.current, 8);
     } catch {
@@ -789,7 +817,7 @@ export default function App() {
       return;
     }
     setContextStatus("3초 문맥 스냅샷 분석 중");
-    setDemoPhase("context");
+    markDemoPhase("context");
     setContextPreview((prev) => ({
       ...prev,
       status: "3초 문맥 스냅샷 분석 중: Claude 판단 대기",
@@ -818,7 +846,7 @@ export default function App() {
       const resultAtMs = performance.now();
       if (!speechStartAtRef.current) speechStartAtRef.current = resultAtMs - 650;
       const timing = { startedAtMs: speechStartAtRef.current, resultAtMs };
-      setDemoPhase("input");
+      markDemoPhase("input");
       let interim = "";
       let final = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -868,7 +896,7 @@ export default function App() {
     sessionStartedAtRef.current = new Date();
     setReport(null);
     setCopyStatus("");
-    setDemoPhase("idle");
+    markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setImmediatePreview(initialPreview("immediate"));
     setContextPreview(initialPreview("context_snapshot"));
@@ -911,7 +939,7 @@ export default function App() {
     generateReport("상담 종료", escalationRef.current, elapsed);
     setInterimText("상담이 종료되었습니다. 특이민원 보고서가 생성되었습니다.");
     setStatus("특이민원 보고서 생성 완료");
-    setDemoPhase("policy");
+    markDemoPhase("policy");
   }
 
   return (
@@ -936,13 +964,13 @@ export default function App() {
       </section>
 
       <section className="process-strip">
-        {demoProcessSteps.map((step, index) => (
+        {demoProcessSteps.map((step) => (
           <div
             key={step.id}
             className={[
               "process-step",
               demoPhase === step.id ? "active" : "",
-              activePhaseIndex >= 0 && index < activePhaseIndex ? "done" : "",
+              litPhaseSet.has(step.id) ? "done" : "",
             ].join(" ")}
           >
             <strong>{step.label}</strong>
