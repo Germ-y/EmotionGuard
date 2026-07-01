@@ -37,7 +37,7 @@ body {
 button, input { font: inherit; }
 
 .app {
-  width: min(1280px, calc(100% - 32px));
+  width: calc(100% - 12px);
   height: 100vh;
   margin: 0 auto;
   padding: 6px 0 10px;
@@ -832,7 +832,7 @@ h2 { margin: 0 0 8px; font-size: 13px; }
 }
 
 @media (max-width: 860px) {
-  .app { width: min(100% - 24px, 1280px); padding-top: 12px; }
+  .app { width: calc(100% - 10px); padding-top: 8px; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .top-actions { width: 100%; }
   .top-actions button { flex: 1; }

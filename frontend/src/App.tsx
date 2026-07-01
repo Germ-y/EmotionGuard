@@ -1814,7 +1814,6 @@ export default function App() {
       <header className="topbar">
         <div>
           <strong className="brand"><span>Emotion</span>Guard</strong>
-          <p>실시간 오디오 보호 게이트웨이 + 3초 AI 문맥 판단</p>
         </div>
         <div className="top-actions">
           <button className="secondary" onClick={() => navigate("/report")}>보고서</button>
