@@ -1096,7 +1096,7 @@ export default function App() {
     result: AnalyzeResponse,
     text: string,
     timing?: SpeechTiming,
-    options: { suppressImmediateMask?: boolean } = {},
+    options: { suppressImmediateMask?: boolean; logNormal?: boolean } = {},
   ) {
     advanceEscalation(result, text);
     if (result.detectionPath === "context_snapshot") markDemoPhase("context");
@@ -1116,6 +1116,7 @@ export default function App() {
     }
 
     const shouldLog =
+      options.logNormal ||
       result.eventType !== "normal" ||
       result.emotion === "angry" ||
       result.emotion === "threatening" ||
@@ -1237,7 +1238,7 @@ export default function App() {
 
       const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
       const exactMasked = scheduleChunkWordMasks(result, transcription.words, chunkStartedAtMs);
-      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked });
+      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
       if (exactMasked) {
         setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
         setDemoStep("OpenAI 청크 STT가 단어 시작/끝 시간을 받아 출력 버퍼에 마스크를 적용했습니다.");
