@@ -41,6 +41,7 @@ type DemoAudioSpec = {
   src: string;
   transcript: string;
   volume?: number;
+  beepWords?: string[];
 };
 
 type ConversationEntry = {
@@ -169,6 +170,7 @@ const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
     src: "/demo-audio/sexual-harassment.mp3",
     transcript: "목소리 섹시해요. 퇴근하면 기다릴게요.",
     volume: 0.92,
+    beepWords: ["섹시해요", "기다릴게요"],
   },
   "sexual-ambiguous": {
     src: "/demo-audio/sexual-ambiguous.mp3",
@@ -348,6 +350,14 @@ function isLikelyLiveSttHallucination(text: string) {
   return liveSttHallucinationPatterns.some((pattern) => pattern.test(text) || pattern.test(compact));
 }
 
+function isTimestampWordMatch(word: string, trigger: string) {
+  if (!word || !trigger) return false;
+  if (word === trigger) return true;
+  if (word.length >= 3 && word.includes(trigger)) return true;
+  if (trigger.length >= 3 && word.includes(trigger.slice(0, Math.max(2, trigger.length - 1)))) return true;
+  return false;
+}
+
 function findTriggeredSpan(text: string, words: string[]) {
   const lowerText = text.toLowerCase();
   const matches = words
@@ -368,7 +378,7 @@ function wordTimestampSegments(words: TranscriptionWord[], triggeredWords: strin
   const segments = words
     .map((item) => {
       const normalizedWord = normalizeSpeechWord(item.word);
-      const matched = normalizedTriggers.some((trigger) => normalizedWord.includes(trigger) || trigger.includes(normalizedWord));
+      const matched = normalizedTriggers.some((trigger) => isTimestampWordMatch(normalizedWord, trigger));
       if (!matched) return null;
       return {
         start: Math.max(0, item.start - CFG.beepPreRollMs / 1000),
@@ -1493,8 +1503,9 @@ export default function App() {
           detail: `${eventLabel[immediateResult.eventType]} · 위험 구간만 * 마스킹`,
         });
       }
+      const beepWords = options.audioKey ? demoAudioSpecs[options.audioKey].beepWords ?? immediateResult.triggeredWords : immediateResult.triggeredWords;
       const beepSegments = transcription
-        ? wordTimestampSegments(transcription.words, immediateResult.triggeredWords)
+        ? wordTimestampSegments(transcription.words, beepWords)
         : [];
       if (options.audioKey && immediateResult.policyActions.includes("mute") && beepSegments.length === 0) {
         setError("STT 단어 타임스탬프에서 욕설 구간을 찾지 못했습니다. 원본 음성은 재생하지 않습니다.");
