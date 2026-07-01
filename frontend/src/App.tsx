@@ -678,10 +678,7 @@ export default function App() {
 
   function markDemoPhase(phase: DemoPhase) {
     setDemoPhase(phase);
-    if (phase === "idle") {
-      setLitPhases([]);
-      return;
-    }
+    if (phase === "idle") return;
     setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
   }
 
@@ -743,7 +740,6 @@ export default function App() {
     if (demoPhase === "idle") return;
     const timer = window.setTimeout(() => {
       setDemoPhase("idle");
-      setLitPhases([]);
     }, 2600);
     return () => window.clearTimeout(timer);
   }, [demoPhase]);
@@ -1763,6 +1759,7 @@ export default function App() {
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     sessionStartedAtRef.current = new Date();
+    setLitPhases([]);
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setMonitorEnabled(true);
