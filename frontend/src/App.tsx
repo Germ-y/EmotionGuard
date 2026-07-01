@@ -84,7 +84,7 @@ type IncidentReport = {
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
-  outputDelay: 1.0,
+  outputDelay: 1.8,
   meterGain: 650,
   beepMinMs: 420,
   beepCharMs: 95,
@@ -92,8 +92,8 @@ const CFG = {
   beepDedupeMs: 2200,
   beepFrequency: 880,
   beepVolume: 0.18,
-  beepPreRollMs: 120,
-  beepPostRollMs: 140,
+  beepPreRollMs: 220,
+  beepPostRollMs: 180,
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
@@ -102,8 +102,8 @@ const CFG = {
   voiceHoldMs: 1200,
   interimDebounceMs: 90,
   recognitionRestartMs: 220,
-  liveChunkMs: 1600,
-  liveChunkMaxInflight: 3,
+  liveChunkMs: 900,
+  liveChunkMaxInflight: 4,
   liveChunkMinBytes: 450,
   liveChunkVoiceWindowMs: 5200,
   liveChunkMinLevel: 0.35,
@@ -192,6 +192,18 @@ const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> 
   { id: "context", label: "3초 맥락", detail: "GPT/Claude/기본 문맥" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
+
+const visibleMaskWords = [
+  "씨발", "시발", "씨바", "시바", "씨불", "시불", "씨팔", "시팔", "씨펄", "시펄", "씨벌", "시벌",
+  "씨발아", "시발아", "씨발놈", "시발놈", "씨발년", "시발년",
+  "개새끼", "개색기", "개색끼", "개세끼", "새끼", "새끼야", "쌔끼", "색히",
+  "병신", "빙신", "븅신", "등신", "머저리", "또라이", "지랄", "존나", "좆", "좃", "좇",
+  "닥쳐", "아가리", "주둥이", "꺼져", "죽어", "죽여",
+  "ㅅㅂ", "ㅆㅂ", "ㅂㅅ", "ㅄ", "ㅈㄹ", "ㅈㄴ",
+  "섹시", "야한", "자자", "몸매", "가슴", "엉덩이",
+];
+
+const visibleMaskExceptions = ["시발점", "시발역", "시발지"];
 
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -426,6 +438,21 @@ function maskTextByWords(text: string, words: string[]) {
     }, text);
 }
 
+function maskVisibleText(text: string) {
+  const preserved: Array<[string, string]> = [];
+  let visible = sanitizeTranscriptText(text);
+  visibleMaskExceptions.forEach((exception, index) => {
+    const token = `__EG_SAFE_${index}__`;
+    preserved.push([token, exception]);
+    visible = visible.replace(new RegExp(exception.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), token);
+  });
+  let masked = maskTextByWords(visible, visibleMaskWords);
+  preserved.forEach(([token, exception]) => {
+    masked = masked.replace(new RegExp(token, "g"), exception);
+  });
+  return masked;
+}
+
 const genericContextTriggers = new Set([
   "목소리",
   "퇴근",
@@ -569,7 +596,7 @@ function persistReportArchive(reports: IncidentReport[]) {
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
-        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${item.text}`)
+        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${maskVisibleText(item.text)}`)
         .join("\n")
     : "감지된 특이 민원 발화 없음";
 
@@ -651,7 +678,7 @@ function ReportPage({ reports, onNavigateHome }: { reports: IncidentReport[]; on
             <div className="report-evidence expanded">
               {item.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
               {item.evidence.map((evidence) => (
-                <article key={evidence.id} data-original={evidence.text}>
+                <article key={evidence.id} data-original={maskVisibleText(evidence.text)}>
                   <small>[{evidence.timestamp}] · {eventLabel[evidence.eventType]} · {pathLabel[evidence.detectionPath]}</small>
                   <p>원문 문장 비공개 기록됨</p>
                 </article>
@@ -671,7 +698,7 @@ export default function App() {
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
   const [gender, setGender] = useState<"male" | "female">("male");
-  const [monitorEnabled, setMonitorEnabled] = useState(true);
+  const [monitorEnabled, setMonitorEnabled] = useState(false);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
@@ -739,6 +766,7 @@ export default function App() {
     timer?: number;
     contextTimer?: number;
     maskTimer?: number;
+    maskUntilAt?: number;
     recognitionRestartTimer?: number;
     lastVoiceActivityTs?: number;
   }>({ raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 });
@@ -756,7 +784,7 @@ export default function App() {
           id: "live-transcript",
           timestamp: formatDuration(elapsed),
           role: "고객",
-          text: liveTranscript.trim(),
+          text: maskVisibleText(liveTranscript.trim()),
           detail: "받아쓰기 중",
           tone: "normal",
         }]
@@ -769,7 +797,7 @@ export default function App() {
           id: line.id,
           timestamp: line.timestamp,
           role: line.role,
-          text: line.text,
+          text: line.role === "고객" ? maskVisibleText(line.text) : line.text,
           detail: line.detail ?? (risk ? "위험 구간만 * 마스킹 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화"),
           tone: line.tone ?? "normal",
           eventType: risk ? ("abuse" as EventType) : undefined,
@@ -782,7 +810,7 @@ export default function App() {
       id: log.id,
       timestamp: log.timestamp,
       role: "고객",
-      text: log.maskedText,
+      text: maskVisibleText(log.maskedText),
       detail: timelineDetailFor(log),
       tone: log.eventType === "normal" ? "normal" : "risk",
       eventType: log.eventType,
@@ -1143,24 +1171,60 @@ export default function App() {
     const nowTime = ctx.currentTime;
     const gain = outGain.gain;
     gain.cancelScheduledValues(nowTime);
-    gain.setValueAtTime(gain.value, nowTime);
+    const carriedMask = audioRef.current.maskUntilAt && audioRef.current.maskUntilAt > nowTime
+      ? [{ startAt: nowTime, endAt: audioRef.current.maskUntilAt }]
+      : [];
+    const mergedSegments = [...carriedMask, ...segments]
+      .map((segment) => ({
+        startAt: Math.max(nowTime, segment.startAt),
+        endAt: Math.max(segment.startAt + 0.18, segment.endAt),
+      }))
+      .sort((a, b) => a.startAt - b.startAt)
+      .reduce<Array<{ startAt: number; endAt: number }>>((merged, segment) => {
+        const last = merged.at(-1);
+        if (!last || segment.startAt > last.endAt + 0.08) {
+          merged.push(segment);
+        } else {
+          last.endAt = Math.max(last.endAt, segment.endAt);
+        }
+        return merged;
+      }, []);
+
+    const currentlyMuted = Boolean(audioRef.current.maskUntilAt && audioRef.current.maskUntilAt > nowTime);
+    gain.setValueAtTime(currentlyMuted ? 0.0001 : baseGain, nowTime);
 
     let latestEndAt = nowTime;
-    segments.forEach((segment) => {
-      const startAt = Math.max(nowTime + 0.02, segment.startAt);
-      const endAt = Math.max(startAt + 0.18, segment.endAt);
+    mergedSegments.forEach((segment) => {
+      const startsNow = segment.startAt <= nowTime + 0.08;
+      const startAt = startsNow ? nowTime + 0.005 : Math.max(nowTime + 0.02, segment.startAt);
+      const endAt = Math.max(startAt + 0.2, segment.endAt);
       latestEndAt = Math.max(latestEndAt, endAt);
 
-      gain.setValueAtTime(baseGain, Math.max(nowTime, startAt - 0.015));
-      gain.linearRampToValueAtTime(0.0001, startAt + 0.025);
+      if (startsNow) {
+        gain.setValueAtTime(0.0001, nowTime + 0.005);
+      } else {
+        gain.setValueAtTime(baseGain, Math.max(nowTime, startAt - 0.025));
+        gain.linearRampToValueAtTime(0.0001, startAt);
+      }
       gain.setValueAtTime(0.0001, endAt);
-      gain.linearRampToValueAtTime(baseGain, endAt + 0.05);
+      gain.linearRampToValueAtTime(baseGain, endAt + 0.06);
+    });
+
+    segments.forEach((segment) => {
+      const startAt = Math.max(nowTime + 0.005, segment.startAt);
+      const endAt = Math.max(startAt + 0.2, segment.endAt);
       playBeep(ctx, startAt, Math.max(180, (endAt - startAt) * 1000));
     });
 
     setMuted(true);
+    audioRef.current.maskUntilAt = latestEndAt + 0.06;
     if (audioRef.current.maskTimer) window.clearTimeout(audioRef.current.maskTimer);
-    audioRef.current.maskTimer = window.setTimeout(() => setMuted(false), Math.max(0, (latestEndAt - nowTime) * 1000 + 80));
+    audioRef.current.maskTimer = window.setTimeout(() => {
+      setMuted(false);
+      if (audioRef.current.ctx === ctx && (!audioRef.current.maskUntilAt || audioRef.current.maskUntilAt <= ctx.currentTime)) {
+        audioRef.current.maskUntilAt = undefined;
+      }
+    }, Math.max(0, (latestEndAt - nowTime) * 1000 + 80));
     return true;
   }
 
@@ -1221,10 +1285,12 @@ export default function App() {
     if (seenEventRef.current.has(fingerprint)) return false;
     seenEventRef.current.add(fingerprint);
 
+    const safeMaskedText = maskVisibleText(result.maskedText || text);
     const entry: LogEntry = {
       ...result,
+      maskedText: safeMaskedText,
       id: crypto.randomUUID(),
-      text,
+      text: safeMaskedText,
       time: now(),
       timestamp: currentSessionTimestamp(),
     };
@@ -1359,7 +1425,7 @@ export default function App() {
 
     if (displayResult.detectionPath === "immediate") {
       if (displayResult.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(displayResult, text, timing);
-      if (displayResult.eventType !== "normal") setInterimText(`${eventLabel[displayResult.eventType]} 감지 - ${displayResult.maskedText}`);
+      if (displayResult.eventType !== "normal") setInterimText(`${eventLabel[displayResult.eventType]} 감지 - ${maskVisibleText(displayResult.maskedText)}`);
     } else if (displayResult.eventType !== "normal") {
       const engine = displayResult.source === "openai" ? "GPT" : displayResult.source === "claude" ? "Claude" : "문맥 엔진";
       setStatus(`${engine} 판단: ${eventLabel[displayResult.eventType]}`);
@@ -1482,7 +1548,7 @@ export default function App() {
       }
       const displayText = recentBrowserDictation() || clean;
       const openAiVisibleDictation = !browserDictationRef.current;
-      if (openAiVisibleDictation) setLiveTranscript(clean);
+      if (openAiVisibleDictation) setLiveTranscript(maskVisibleText(clean));
       if (isLikelyLiveSttHallucination(clean)) {
         if (openAiVisibleDictation) setLiveTranscript("");
         setStatus("OpenAI 청크 STT 대기 중");
@@ -1513,7 +1579,7 @@ export default function App() {
       if (result.eventType === "normal") {
         if (openAiVisibleDictation) {
           applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
-          setInterimText(clean);
+          setInterimText(maskVisibleText(clean));
           setLiveTranscript("");
           setStatus("받아쓰기 기록");
         } else {
@@ -1964,8 +2030,8 @@ export default function App() {
       }
       if (interim) {
         const cleanInterim = sanitizeTranscriptText(interim);
-        setInterimText(cleanInterim);
-        setLiveTranscript(cleanInterim);
+        setInterimText(maskVisibleText(cleanInterim));
+        setLiveTranscript(maskVisibleText(cleanInterim));
         lastBrowserDictationRef.current = { text: cleanInterim, at: Date.now() };
         queueInterimImmediate(cleanInterim, timing);
       }
@@ -2042,11 +2108,11 @@ export default function App() {
     setLitPhases([]);
     markDemoPhase("idle");
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
-    setMonitorEnabled(true);
+    setMonitorEnabled(false);
     setActive(true);
 
     try {
-      await startAudio(true);
+      await startAudio(false);
       startOpenAIChunkStt();
       startRecognition();
       speak("안녕하세요. 원활한 상담을 위해 통화 내용이 녹음됩니다.");
@@ -2229,7 +2295,7 @@ export default function App() {
                   <time>[{entry.timestamp}]</time>
                   <b>{entry.role === "시스템" ? "보호 조치" : entry.role}</b>
                   <div>
-                    <strong>{entry.text}</strong>
+                    <strong>{maskVisibleText(entry.text)}</strong>
                     <small>{entry.detail}</small>
                   </div>
                 </article>
