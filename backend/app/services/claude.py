@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.models import AnalysisResult, AudioFeatures
+from app.models import AnalysisResult, AudioFeatures, FeedbackContext
 from app.services.local_classifier import conservative_fail
 
 
@@ -62,10 +62,23 @@ sexual 판정 기준:
 - categories에는 "욕설", "위협", "성희롱", "성차별", "스토킹", "인신공격" 같은 짧은 한국어 라벨만 넣는다."""
 
 
-def build_analysis_payload(text: str, audio_features: AudioFeatures | None = None) -> str:
-    payload: dict[str, Any] = {"text": text}
+def build_analysis_payload(
+    text: str,
+    audio_features: AudioFeatures | None = None,
+    feedback_context: FeedbackContext | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "text": text,
+        "feedbackRule": (
+            "feedbackContext is a weak prior from earlier turns. Use it to interpret repeated risk, "
+            "emotion escalation, and ambiguous harassment cues, but never mark sexual or abusive solely "
+            "because of feedback without support in the current text/context."
+        ),
+    }
     if audio_features:
         payload["audioFeatures"] = audio_features.model_dump(exclude_none=True)
+    if feedback_context:
+        payload["feedbackContext"] = feedback_context.model_dump(exclude_none=True)
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -86,7 +99,11 @@ def _coerce_result(payload: dict[str, Any]) -> AnalysisResult:
     )
 
 
-async def classify_with_claude(text: str, audio_features: AudioFeatures | None = None) -> AnalysisResult:
+async def classify_with_claude(
+    text: str,
+    audio_features: AudioFeatures | None = None,
+    feedback_context: FeedbackContext | None = None,
+) -> AnalysisResult:
     if not settings.anthropic_api_key:
         return conservative_fail(text)
 
@@ -103,7 +120,7 @@ async def classify_with_claude(text: str, audio_features: AudioFeatures | None =
                     "model": settings.anthropic_model,
                     "max_tokens": settings.anthropic_max_tokens,
                     "system": ANALYST_SYSTEM,
-                    "messages": [{"role": "user", "content": build_analysis_payload(text, audio_features)}],
+                    "messages": [{"role": "user", "content": build_analysis_payload(text, audio_features, feedback_context)}],
                 },
             )
             response.raise_for_status()

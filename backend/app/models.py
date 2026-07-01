@@ -9,6 +9,7 @@ Source = Literal["local", "openai", "claude", "fallback"]
 EventType = Literal["normal", "abuse", "sexual", "raised", "abuse-raised"]
 AnalysisMode = Literal["immediate", "context_snapshot"]
 PolicyAction = Literal["mute", "pitch_shift", "volume_reduce", "warn_tts", "escalate", "report"]
+AcousticTrend = Literal["quiet", "stable", "escalating"]
 
 
 class AudioFeatures(BaseModel):
@@ -25,12 +26,30 @@ class AudioFeatures(BaseModel):
     voiceActivity: bool | None = None
 
 
+class FeedbackContext(BaseModel):
+    sessionRiskScore: int = Field(default=0, ge=0, le=100)
+    repeatedRisk: bool = False
+    abuseCount: int = Field(default=0, ge=0)
+    sexualCount: int = Field(default=0, ge=0)
+    raisedCount: int = Field(default=0, ge=0)
+    normalCount: int = Field(default=0, ge=0)
+    recentEvents: list[EventType] = Field(default_factory=list, max_length=20)
+    recentEmotions: list[Emotion] = Field(default_factory=list, max_length=20)
+    recentCategories: list[str] = Field(default_factory=list, max_length=40)
+    recentTriggeredWords: list[str] = Field(default_factory=list, max_length=40)
+    lastEventType: EventType | None = None
+    lastEmotion: Emotion | None = None
+    acousticTrend: AcousticTrend = "stable"
+    notes: list[str] = Field(default_factory=list, max_length=20)
+
+
 class AnalyzeRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     raised: bool = False
     analysisMode: AnalysisMode = "immediate"
     contextWindowMs: int = Field(default=3000, ge=1000, le=10000)
     audioFeatures: AudioFeatures | None = None
+    feedbackContext: FeedbackContext | None = None
 
 
 class AnalysisResult(BaseModel):
@@ -51,6 +70,7 @@ class AnalyzeResponse(AnalysisResult):
     contextWindowMs: int
     policyActions: list[PolicyAction]
     audioFeatures: AudioFeatures | None = None
+    feedbackContext: FeedbackContext | None = None
 
 
 class TranscriptionWord(BaseModel):

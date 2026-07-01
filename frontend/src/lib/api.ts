@@ -17,6 +17,23 @@ export interface AudioFeatures {
   voiceActivity?: boolean;
 }
 
+export interface FeedbackContext {
+  sessionRiskScore: number;
+  repeatedRisk: boolean;
+  abuseCount: number;
+  sexualCount: number;
+  raisedCount: number;
+  normalCount: number;
+  recentEvents: EventType[];
+  recentEmotions: Emotion[];
+  recentCategories: string[];
+  recentTriggeredWords: string[];
+  lastEventType?: EventType | null;
+  lastEmotion?: Emotion | null;
+  acousticTrend: "quiet" | "stable" | "escalating";
+  notes: string[];
+}
+
 export interface AnalyzeResponse {
   abusive: boolean;
   severity: "none" | "mild" | "severe";
@@ -32,6 +49,7 @@ export interface AnalyzeResponse {
   contextWindowMs: number;
   policyActions: PolicyAction[];
   audioFeatures?: AudioFeatures | null;
+  feedbackContext?: FeedbackContext | null;
 }
 
 export interface TranscriptionWord {
@@ -54,11 +72,12 @@ export async function analyzeUtterance(
   analysisMode: AnalysisMode,
   contextWindowMs = 3000,
   audioFeatures?: AudioFeatures,
+  feedbackContext?: FeedbackContext,
 ): Promise<AnalyzeResponse> {
   const response = await fetch(`${API_BASE_URL}/api/analyze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text, raised, analysisMode, contextWindowMs, audioFeatures }),
+    body: JSON.stringify({ text, raised, analysisMode, contextWindowMs, audioFeatures, feedbackContext }),
   });
 
   if (!response.ok) {

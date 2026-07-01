@@ -754,6 +754,32 @@ h2 { margin: 0 0 8px; font-size: 13px; }
   color: var(--blue);
   font-size: 12px;
 }
+.feedback-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.feedback-card h2 {
+  margin-bottom: 2px;
+}
+.feedback-card div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+.feedback-card strong {
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
 .report-page {
   max-width: 1080px;
   overflow: auto;

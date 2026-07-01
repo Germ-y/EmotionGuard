@@ -5,6 +5,7 @@ import {
   AnalyzeResponse,
   AudioFeatures,
   EventType,
+  FeedbackContext,
   PolicyAction,
   transcribeAudioBlob,
   TranscribeResponse,
@@ -663,6 +664,70 @@ function initialEscalation(): EscalationState {
   return { abuse: 0, sexual: 0 };
 }
 
+function initialFeedbackContext(): FeedbackContext {
+  return {
+    sessionRiskScore: 0,
+    repeatedRisk: false,
+    abuseCount: 0,
+    sexualCount: 0,
+    raisedCount: 0,
+    normalCount: 0,
+    recentEvents: [],
+    recentEmotions: [],
+    recentCategories: [],
+    recentTriggeredWords: [],
+    lastEventType: null,
+    lastEmotion: null,
+    acousticTrend: "stable",
+    notes: [],
+  };
+}
+
+function appendTail<T>(items: T[], item: T, limit: number) {
+  return [...items, item].slice(-limit);
+}
+
+function appendUniqueTail(items: string[], incoming: string[], limit: number) {
+  return uniqueValues([...items, ...incoming].filter(Boolean)).slice(-limit);
+}
+
+function acousticTrendFrom(features?: AudioFeatures | null): FeedbackContext["acousticTrend"] {
+  if (!features?.voiceActivity) return "quiet";
+  const rms = features.rmsPercent ?? 0;
+  const zcr = features.zeroCrossingRate ?? 0;
+  const speed = features.syllablesPerSecond ?? 0;
+  const pitchConfidence = features.pitchConfidence ?? 0;
+  const pitch = features.pitchHz ?? 0;
+  if (rms >= 70 || zcr >= 0.18 || speed >= 7.2 || (pitchConfidence >= 0.45 && pitch >= 260)) {
+    return "escalating";
+  }
+  return "stable";
+}
+
+function feedbackRiskDelta(result: AnalyzeResponse, features?: AudioFeatures | null) {
+  const eventWeight: Record<EventType, number> = {
+    normal: 0,
+    raised: 10,
+    abuse: 24,
+    "abuse-raised": 34,
+    sexual: 38,
+  };
+  const emotionWeight = result.emotion === "threatening" ? 18 : result.emotion === "angry" ? 12 : result.emotion === "frustrated" ? 5 : 0;
+  const severityWeight = result.severity === "severe" ? 14 : result.severity === "mild" ? 6 : 0;
+  const acousticWeight = acousticTrendFrom(features) === "escalating" ? 8 : 0;
+  return eventWeight[result.eventType] + emotionWeight + severityWeight + acousticWeight;
+}
+
+function feedbackNotesFor(context: FeedbackContext) {
+  const notes: string[] = [];
+  if (context.repeatedRisk) notes.push("repeated-risk");
+  if (context.sexualCount > 0) notes.push("prior-sexual-cue");
+  if (context.abuseCount + context.raisedCount >= 2) notes.push("abuse-raised-pattern");
+  if (context.acousticTrend === "escalating") notes.push("acoustic-escalation");
+  if (context.sessionRiskScore >= 70) notes.push("high-session-risk");
+  return notes.slice(-20);
+}
+
 function loadReportArchive(): IncidentReport[] {
   try {
     const raw = window.localStorage.getItem(REPORT_ARCHIVE_KEY);
@@ -801,6 +866,7 @@ export default function App() {
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [reportArchive, setReportArchive] = useState<IncidentReport[]>(() => loadReportArchive());
   const [audioFeatures, setAudioFeatures] = useState<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
+  const [feedbackContext, setFeedbackContext] = useState<FeedbackContext>(() => initialFeedbackContext());
   const [latestDetection, setLatestDetection] = useState<LatestDetectionView | null>(null);
   const [error, setError] = useState("");
 
@@ -808,10 +874,12 @@ export default function App() {
   const logsRef = useRef<LogEntry[]>([]);
   const reportLogsRef = useRef<LogEntry[]>([]);
   const contextBufferRef = useRef<string[]>([]);
+  const feedbackContextRef = useRef<FeedbackContext>(initialFeedbackContext());
   const escalationRef = useRef<EscalationState>(initialEscalation());
   const seenEventRef = useRef(new Set<string>());
   const seenStageRef = useRef(new Set<string>());
   const lastBeepRef = useRef<{ key: string; at: number } | null>(null);
+  const lastFeedbackRef = useRef<{ key: string; at: number } | null>(null);
   const announcingRef = useRef(false);
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
@@ -1369,6 +1437,58 @@ export default function App() {
     announcingRef.current = false;
   }
 
+  function feedbackSnapshot(features?: AudioFeatures | null) {
+    const base = feedbackContextRef.current;
+    const acousticTrend = acousticTrendFrom(features ?? audioFeaturesRef.current);
+    const snapshot = {
+      ...base,
+      acousticTrend,
+      notes: feedbackNotesFor({ ...base, acousticTrend }),
+    };
+    feedbackContextRef.current = snapshot;
+    setFeedbackContext(snapshot);
+    return snapshot;
+  }
+
+  function updateFeedbackLoop(result: AnalyzeResponse, features?: AudioFeatures | null) {
+    const feedbackKey = `${result.eventType}:${compactTranscriptText(result.maskedText)}`;
+    const feedbackNow = Date.now();
+    if (lastFeedbackRef.current?.key === feedbackKey && feedbackNow - lastFeedbackRef.current.at < 2600) {
+      return;
+    }
+    lastFeedbackRef.current = { key: feedbackKey, at: feedbackNow };
+
+    const prev = feedbackContextRef.current;
+    const acousticTrend = acousticTrendFrom(features ?? result.audioFeatures ?? audioFeaturesRef.current);
+    const riskDelta = feedbackRiskDelta(result, features ?? result.audioFeatures);
+    const decayedRisk = result.eventType === "normal"
+      ? Math.max(0, Math.round(prev.sessionRiskScore * 0.72) - 2)
+      : Math.round(prev.sessionRiskScore * 0.86);
+    const recentEvents = appendTail(prev.recentEvents, result.eventType, 20);
+    const recentRiskCount = recentEvents.slice(-5).filter((eventType) => eventType !== "normal").length;
+    const repeatedRisk = recentRiskCount >= 2 || decayedRisk + riskDelta >= 70;
+    const next: FeedbackContext = {
+      ...prev,
+      sessionRiskScore: clamp(decayedRisk + riskDelta, 0, 100),
+      repeatedRisk,
+      abuseCount: prev.abuseCount + (result.eventType === "abuse" ? 1 : 0),
+      sexualCount: prev.sexualCount + (result.eventType === "sexual" ? 1 : 0),
+      raisedCount: prev.raisedCount + (result.eventType === "raised" || result.eventType === "abuse-raised" ? 1 : 0),
+      normalCount: prev.normalCount + (result.eventType === "normal" ? 1 : 0),
+      recentEvents,
+      recentEmotions: appendTail(prev.recentEmotions, result.emotion, 20),
+      recentCategories: appendUniqueTail(prev.recentCategories, result.categories, 40),
+      recentTriggeredWords: appendUniqueTail(prev.recentTriggeredWords, result.triggeredWords, 40),
+      lastEventType: result.eventType,
+      lastEmotion: result.emotion,
+      acousticTrend,
+      notes: [],
+    };
+    next.notes = feedbackNotesFor(next);
+    feedbackContextRef.current = next;
+    setFeedbackContext(next);
+  }
+
   function appendLog(result: AnalyzeResponse, text: string) {
     if (!activeRef.current) return false;
     const fingerprint = `${result.eventType}:${result.maskedText}:${Math.floor(Date.now() / 1200)}`;
@@ -1514,8 +1634,9 @@ export default function App() {
         displayResult.emotion === "angry" ||
         displayResult.emotion === "threatening" ||
         displayResult.policyActions.includes("report")
-      );
+    );
     const logged = shouldLog ? appendLog(displayResult, text) : true;
+    if (!options.deferLog) updateFeedbackLoop(displayResult, displayResult.audioFeatures);
     if (logged && !options.skipEscalation) advanceEscalation(displayResult, text);
 
     if (displayResult.detectionPath === "immediate") {
@@ -1615,7 +1736,7 @@ export default function App() {
     const raised = analysisMode === "immediate" && Date.now() - audioRef.current.lastRaisedTs < CFG.raisedFlagWindow;
     const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
     try {
-      const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features);
+      const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features, feedbackSnapshot(features));
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const displayText = analysisMode === "context_snapshot"
         ? contextBufferRef.current.at(-1) ?? clean
@@ -1658,7 +1779,7 @@ export default function App() {
       const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
       markDemoPhase("detect");
       setStatus("OpenAI 받아쓰기 청크 분석 중");
-      const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
+      const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features, feedbackSnapshot(features));
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
       const exactMasked = scheduleChunkWordMasks(result, clean, transcription.words, chunkStartedAtMs);
       const normalizedClean = compactTranscriptText(clean);
@@ -1811,7 +1932,7 @@ export default function App() {
     );
     audioFeaturesRef.current = demoFeatures;
     setAudioFeatures(demoFeatures);
-    const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs, demoFeatures);
+    const result = await analyzeUtterance(text, raised, analysisMode, CFG.contextWindowMs, demoFeatures, feedbackSnapshot(demoFeatures));
     applyPolicy(result, text, { startedAtMs: performance.now() - 900, resultAtMs: performance.now() });
     return result;
   }
@@ -2206,9 +2327,12 @@ export default function App() {
     setStatus("보호된 상담사 청취 출력");
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
+    feedbackContextRef.current = initialFeedbackContext();
+    setFeedbackContext(feedbackContextRef.current);
     lastContextSnapshotRef.current = "";
     seenEventRef.current.clear();
     lastBeepRef.current = null;
+    lastFeedbackRef.current = null;
     lastNormalTranscriptRef.current = null;
     resetEscalation();
     interimCheckRef.current.lastText = "";
@@ -2421,6 +2545,21 @@ export default function App() {
             <div><dt>고성</dt><dd>{counts.raised}</dd></div>
             <div><dt>성희롱</dt><dd>{counts.sexual}</dd></div>
           </dl>
+          <section className="feedback-card">
+            <h2>피드백 루프</h2>
+            <div>
+              <span>위험 점수</span>
+              <strong>{feedbackContext.sessionRiskScore}</strong>
+            </div>
+            <div>
+              <span>반복 신호</span>
+              <strong>{feedbackContext.repeatedRisk ? "반영" : "대기"}</strong>
+            </div>
+            <div>
+              <span>음향 추세</span>
+              <strong>{feedbackContext.acousticTrend === "escalating" ? "상승" : feedbackContext.acousticTrend === "quiet" ? "무음" : "안정"}</strong>
+            </div>
+          </section>
           <section className="report-link-card">
             <h2>보고서</h2>
             <p>상담 종료 시 보고서가 자동 저장됩니다.</p>
