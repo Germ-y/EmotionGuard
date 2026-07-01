@@ -343,6 +343,16 @@ function compactTranscriptText(value: string) {
     .replace(/[.,!?~…'"“”‘’]/g, "");
 }
 
+function sanitizeTranscriptText(value: string) {
+  return value
+    .replace(/이전 상담 문맥\s*:\s*/g, "")
+    .replace(/이어지는 발화를 한국어로 그대로 받아쓰기\.?/g, "")
+    .replace(/문맥에 없는 내용을 새로 만들지 말 것\.?/g, "")
+    .replace(/한국어 음성을 들리는 대로 그대로 받아쓰기\.?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isLikelyLiveSttHallucination(text: string) {
   const compact = compactTranscriptText(text);
   if (!compact) return true;
@@ -710,6 +720,7 @@ export default function App() {
     lastProbeTs: 0,
   });
   const lastNormalTranscriptRef = useRef<{ text: string; at: number } | null>(null);
+  const lastContextSnapshotRef = useRef("");
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -803,13 +814,7 @@ export default function App() {
   }
 
   function dictationPrompt() {
-    const context = contextBufferRef.current
-      .slice(-5)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!context) return "";
-    return `이전 상담 문맥: ${context}. 이어지는 발화를 한국어로 그대로 받아쓰기. 문맥에 없는 내용을 새로 만들지 말 것.`;
+    return "";
   }
 
   function recentBrowserDictation(maxAgeMs = 3000) {
@@ -1224,6 +1229,33 @@ export default function App() {
       timestamp: currentSessionTimestamp(),
     };
 
+    const recent = logsRef.current[0];
+    const compactEntry = compactTranscriptText(entry.maskedText);
+    const compactRecent = compactTranscriptText(recent?.maskedText ?? "");
+    const sameGrowingUtterance =
+      recent &&
+      recent.eventType === entry.eventType &&
+      compactEntry.length > 8 &&
+      compactRecent.length > 8 &&
+      (compactEntry.includes(compactRecent) || compactRecent.includes(compactEntry));
+    if (sameGrowingUtterance) {
+      const merged = compactEntry.length >= compactRecent.length ? { ...entry, id: recent.id, time: recent.time, timestamp: recent.timestamp } : recent;
+      reportLogsRef.current = [merged, ...reportLogsRef.current.filter((item) => item.id !== recent.id)].slice(0, 200);
+      logsRef.current = [merged, ...logsRef.current.slice(1)].slice(0, 200);
+      setLogs((prev) => [merged, ...prev.slice(1)].slice(0, 200));
+      if (merged.eventType !== "normal") {
+        setLatestDetection({
+          id: merged.id,
+          timestamp: merged.timestamp,
+          title: `${eventLabel[merged.eventType]} · ${pathLabel[merged.detectionPath]}`,
+          detail: `${merged.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[merged.source]}`,
+          eventType: merged.eventType,
+          original: merged.text,
+        });
+      }
+      return false;
+    }
+
     countersRef.current[result.eventType] += 1;
     reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
     logsRef.current = [entry, ...logsRef.current].slice(0, 200);
@@ -1278,9 +1310,8 @@ export default function App() {
     result: AnalyzeResponse,
     text: string,
     timing?: SpeechTiming,
-    options: { suppressImmediateMask?: boolean; logNormal?: boolean } = {},
+    options: { suppressImmediateMask?: boolean; logNormal?: boolean; deferLog?: boolean; skipEscalation?: boolean } = {},
   ) {
-    advanceEscalation(result, text);
     if (result.detectionPath === "context_snapshot") markDemoPhase("context");
     if (
       result.policyActions.includes("mute") ||
@@ -1299,12 +1330,16 @@ export default function App() {
 
     const displayResult = withDisplayMask(result, text);
     const shouldLog =
-      options.logNormal ||
-      displayResult.eventType !== "normal" ||
-      displayResult.emotion === "angry" ||
-      displayResult.emotion === "threatening" ||
-      displayResult.policyActions.includes("report");
+      !options.deferLog &&
+      (
+        options.logNormal ||
+        displayResult.eventType !== "normal" ||
+        displayResult.emotion === "angry" ||
+        displayResult.emotion === "threatening" ||
+        displayResult.policyActions.includes("report")
+      );
     const logged = shouldLog ? appendLog(displayResult, text) : true;
+    if (logged && !options.skipEscalation) advanceEscalation(displayResult, text);
 
     if (displayResult.detectionPath === "immediate") {
       if (displayResult.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(displayResult, text, timing);
@@ -1392,9 +1427,9 @@ export default function App() {
     text: string,
     analysisMode: AnalysisMode,
     timing?: SpeechTiming,
-    options: { logNormal?: boolean; runId?: number } = {},
+    options: { logNormal?: boolean; runId?: number; interim?: boolean } = {},
   ) {
-    const clean = text.trim();
+    const clean = sanitizeTranscriptText(text);
     if (!clean) return;
     const runId = options.runId ?? sessionRunIdRef.current;
     if (!activeRef.current || runId !== sessionRunIdRef.current) return;
@@ -1405,7 +1440,11 @@ export default function App() {
     try {
       const result = await analyzeUtterance(clean, raised, analysisMode, CFG.contextWindowMs, features);
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
-      applyPolicy(result, clean, timing, { logNormal: Boolean(options.logNormal) });
+      applyPolicy(result, clean, timing, {
+        logNormal: Boolean(options.logNormal),
+        deferLog: Boolean(options.interim),
+        skipEscalation: Boolean(options.interim),
+      });
     } catch {
       setError("분석 서버 연결에 실패했습니다. backend 서버가 실행 중인지 확인해주세요.");
     }
@@ -1419,7 +1458,7 @@ export default function App() {
     try {
       const transcription = await transcribeAudioBlob(blob, `live-${Math.floor(chunkStartedAtMs)}.webm`, dictationPrompt());
       if (!activeRef.current || runId !== sessionRunIdRef.current) return;
-      const clean = (transcription.text || "").trim();
+      const clean = sanitizeTranscriptText(transcription.text || "");
       if (!clean) {
         setLiveTranscript("");
         setStatus("음성 입력 대기 중");
@@ -1561,7 +1600,7 @@ export default function App() {
   }
 
   function queueInterimImmediate(text: string, timing: SpeechTiming) {
-    const clean = text.trim();
+    const clean = sanitizeTranscriptText(text);
     if (!clean || announcingRef.current) return;
     if (clean === interimCheckRef.current.lastText) return;
 
@@ -1571,7 +1610,7 @@ export default function App() {
 
     interimCheckRef.current.timer = window.setTimeout(() => {
       interimCheckRef.current.lastText = clean;
-      void processText(clean, "immediate", timing, { runId: sessionRunIdRef.current });
+      void processText(clean, "immediate", timing, { interim: true, runId: sessionRunIdRef.current });
     }, CFG.interimDebounceMs);
   }
 
@@ -1822,18 +1861,35 @@ export default function App() {
   }
 
   function pushContext(text: string) {
-    contextBufferRef.current.push(text);
+    const clean = sanitizeTranscriptText(text);
+    if (!clean || isLikelyLiveSttHallucination(clean)) return;
+    const last = contextBufferRef.current.at(-1);
+    const compactClean = compactTranscriptText(clean);
+    const compactLast = compactTranscriptText(last ?? "");
+    if (compactClean && compactClean === compactLast) return;
+    if (last && compactClean.includes(compactLast) && compactLast.length > 8) {
+      contextBufferRef.current = [...contextBufferRef.current.slice(0, -1), clean].slice(-8);
+      return;
+    }
+    if (last && compactLast.includes(compactClean) && compactClean.length > 8) return;
+    contextBufferRef.current.push(clean);
     contextBufferRef.current = contextBufferRef.current.slice(-8);
   }
 
   async function runContextSnapshot() {
     if (announcingRef.current) return;
-    const snapshot = contextBufferRef.current.join(" ").trim();
+    const snapshot = sanitizeTranscriptText(contextBufferRef.current.join(" ")).slice(-260);
     if (!snapshot) {
       setStatus("3초 문맥 스냅샷 대기");
       return;
     }
     setStatus("3초 문맥 스냅샷 분석 중");
+    const compactSnapshot = compactTranscriptText(snapshot);
+    if (compactSnapshot === lastContextSnapshotRef.current) {
+      setStatus("3초 문맥 엔진 대기");
+      return;
+    }
+    lastContextSnapshotRef.current = compactSnapshot;
     markDemoPhase("context");
     await processText(snapshot, "context_snapshot", undefined, { runId: sessionRunIdRef.current });
   }
@@ -1891,16 +1947,17 @@ export default function App() {
         else interim += transcript;
       }
       if (interim) {
-        setInterimText(interim);
-        setLiveTranscript(interim);
-        lastBrowserDictationRef.current = { text: interim, at: Date.now() };
-        pushContext(interim);
-        queueInterimImmediate(interim, timing);
+        const cleanInterim = sanitizeTranscriptText(interim);
+        setInterimText(cleanInterim);
+        setLiveTranscript(cleanInterim);
+        lastBrowserDictationRef.current = { text: cleanInterim, at: Date.now() };
+        queueInterimImmediate(cleanInterim, timing);
       }
       if (final) {
-        lastBrowserDictationRef.current = { text: final, at: Date.now() };
-        pushContext(final);
-        void processText(final, "immediate", timing, { logNormal: true, runId: sessionRunIdRef.current });
+        const cleanFinal = sanitizeTranscriptText(final);
+        lastBrowserDictationRef.current = { text: cleanFinal, at: Date.now() };
+        pushContext(cleanFinal);
+        void processText(cleanFinal, "immediate", timing, { logNormal: true, runId: sessionRunIdRef.current });
         setLiveTranscript("");
         speechStartAtRef.current = null;
       }
@@ -1958,6 +2015,7 @@ export default function App() {
     setStatus("보호된 상담사 청취 출력");
     countersRef.current = initialCounts();
     contextBufferRef.current = [];
+    lastContextSnapshotRef.current = "";
     seenEventRef.current.clear();
     lastBeepRef.current = null;
     lastNormalTranscriptRef.current = null;
@@ -2017,6 +2075,7 @@ export default function App() {
     liveChunkRef.current = { enabled: false, inFlight: 0, lastProbeTs: 0 };
     lastNormalTranscriptRef.current = null;
     lastBrowserDictationRef.current = null;
+    lastContextSnapshotRef.current = "";
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     announcingRef.current = false;
