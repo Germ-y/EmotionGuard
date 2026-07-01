@@ -591,18 +591,15 @@ export default function App() {
     const dialogue = demoDialogue.filter((line) => line.role !== "상담사");
     if (dialogue.length > 0) {
       return dialogue.map((line) => {
-        const hidden = line.tone === "risk";
-        const safeText = line.text.includes("STT") || line.text.includes("삐") || line.text.includes("비공개")
-          ? line.text
-          : "삐 처리된 고객 발화";
+        const risk = line.tone === "risk";
         return {
           id: line.id,
           timestamp: line.timestamp,
           role: line.role,
-          text: hidden ? safeText : line.text,
-          detail: line.detail ?? (hidden ? "원문 비공개 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화"),
+          text: line.text,
+          detail: line.detail ?? (risk ? "위험 구간만 * 마스킹 · 보호 오디오 출력" : line.role === "시스템" ? "시스템 보호 조치" : "고객 발화"),
           tone: line.tone ?? "normal",
-          eventType: hidden ? "abuse" : undefined,
+          eventType: risk ? "abuse" : undefined,
         };
       });
     }
@@ -611,7 +608,7 @@ export default function App() {
       id: log.id,
       timestamp: log.timestamp,
       role: "고객",
-      text: "삐 처리된 고객 발화",
+      text: log.maskedText,
       detail: `${eventLabel[log.eventType]} · ${pathLabel[log.detectionPath]} · ${log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · ${sourceLabel[log.source]}`,
       tone: log.eventType === "normal" ? "normal" : "risk",
       eventType: log.eventType,
@@ -663,6 +660,7 @@ export default function App() {
     transcription: TranscribeResponse,
     fallbackText: string,
     sensitive: boolean,
+    finalSensitiveText?: string,
   ) {
     const frames = streamingTranscriptFrames(transcription, fallbackText).slice(0, 120);
     const finalText = transcription.text || fallbackText;
@@ -671,7 +669,7 @@ export default function App() {
         const dots = "●".repeat(clamp(frame.syllables || frame.text.length, 1, 12));
         updateDemoDialogue(lineId, {
           text: `STT 수신 중 ${dots}`,
-          detail: `원문 비공개 · ${frame.syllables || frame.text.length}음절 처리`,
+          detail: `민감 구간 실시간 마스킹 · ${frame.syllables || frame.text.length}음절 처리`,
         });
         return;
       }
@@ -685,8 +683,8 @@ export default function App() {
     const finalAt = frames.at(-1)?.at ?? 0.8;
     timers.push(window.setTimeout(() => {
       updateDemoDialogue(lineId, {
-        text: sensitive ? "삐 처리된 고객 발화" : finalText,
-        detail: sensitive ? "원문 비공개 · 보호 오디오 출력 완료" : "STT 확정 발화",
+        text: sensitive ? finalSensitiveText ?? "마스킹 문장 확정 대기" : finalText,
+        detail: sensitive ? "위험 구간만 * 마스킹 · 보호 오디오 출력 완료" : "STT 확정 발화",
       });
     }, Math.max(650, finalAt * 1000 + 160)));
 
@@ -1375,10 +1373,10 @@ export default function App() {
           "STT 수신 대기",
           "risk",
           stamp(options.seconds),
-          "원문 비공개 · 단어 타임스탬프 대기",
+          "단어 타임스탬프 대기",
         );
       } else {
-        pushDemoDialogue("고객", spokenText, "risk", stamp(options.seconds));
+        lineId = pushDemoDialogue("고객", "위험 발화 분석 중", "risk", stamp(options.seconds), "마스킹 문장 생성 대기");
       }
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
       await sleep(options.audioKey ? 260 : 520);
@@ -1388,6 +1386,12 @@ export default function App() {
       setDemoStep(options.raised ? "RMS 기준 초과: 고성 완화 마스크 준비" : "로컬 사전 감지: 위험 단어 구간 확인");
       const immediateResult = await analyzeDemo(spokenText, options.raised, "immediate");
       setEscalationStage(options.stageKind, options.stage);
+      if (lineId) {
+        updateDemoDialogue(lineId, {
+          text: immediateResult.maskedText,
+          detail: `${eventLabel[immediateResult.eventType]} · 위험 구간만 * 마스킹`,
+        });
+      }
       const beepSegments = transcription
         ? wordTimestampSegments(transcription.words, immediateResult.triggeredWords)
         : [];
@@ -1397,7 +1401,7 @@ export default function App() {
       }
       if (options.audioKey) {
         const playbackMs = await playDemoAudio(options.audioKey, beepSegments);
-        if (lineId) scheduleStreamingSttLine(lineId, transcription!, spokenText, true);
+        if (lineId) scheduleStreamingSttLine(lineId, transcription!, spokenText, true, immediateResult.maskedText);
         await sleep(clamp(playbackMs + 260, 900, 3600));
       } else {
         await sleep(620);
