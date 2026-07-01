@@ -329,6 +329,10 @@ const liveSttHallucinationPatterns = [
   /광고.*후/i,
   /연합뉴스/i,
   /한국경제\s*tv/i,
+  /영상\s*편집/i,
+  /자막.*사용/i,
+  /사용하였습니다/,
+  /잘\s*들리시나요/,
 ];
 
 function compactTranscriptText(value: string) {
@@ -1276,8 +1280,6 @@ export default function App() {
       const features = mergeUtteranceFeatures(audioFeaturesRef.current, clean, timing);
       markDemoPhase("detect");
       setStatus("OpenAI 1초 청크 STT 분석 중");
-      pushContext(clean);
-
       const result = await analyzeUtterance(clean, raised, "immediate", CFG.contextWindowMs, features);
       const exactMasked = scheduleChunkWordMasks(result, transcription.words, chunkStartedAtMs);
       const normalizedClean = compactTranscriptText(clean);
@@ -1289,7 +1291,13 @@ export default function App() {
         lastNormalTranscriptRef.current = { text: normalizedClean, at: Date.now() };
       }
       if (repeatedNormal) return;
-      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked, logNormal: true });
+      pushContext(clean);
+      if (result.eventType === "normal") {
+        setInterimText("정상 발화 수신 중");
+        setStatus("라이브 입력 수신 중");
+        return;
+      }
+      applyPolicy(result, clean, timing, { suppressImmediateMask: exactMasked });
       if (exactMasked) {
         setStatus("OpenAI 단어 타임스탬프 기반 삐 처리");
         setDemoStep("OpenAI 청크 STT가 단어 시작/끝 시간을 받아 출력 버퍼에 마스크를 적용했습니다.");
@@ -1921,7 +1929,7 @@ export default function App() {
               <span>{latestDetection ? `최근 감지 [${latestDetection.timestamp}] · ${eventLabel[latestDetection.eventType]}` : "고객 발화와 보호 조치 누적"}</span>
             </div>
             <div className="conversation-list" ref={timelineRef}>
-              {conversationEntries.length === 0 && <p className="empty">고객 발화가 들어오면 [00:00] 형식으로 바로 기록됩니다.</p>}
+              {conversationEntries.length === 0 && <p className="empty">보호 이벤트가 감지되면 [00:00] 형식으로 바로 기록됩니다.</p>}
               {conversationEntries.map((entry) => (
                 <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.eventType ?? ""}`}>
                   <time>[{entry.timestamp}]</time>
