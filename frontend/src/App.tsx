@@ -557,7 +557,7 @@ export default function App() {
     timers: number[];
   }>({ sources: [], timers: [] });
   const demoTranscriptionCacheRef = useRef<Partial<Record<DemoAudioKey, TranscribeResponse>>>({});
-  const liveChunkRef = useRef({ nextStartedAtMs: 0, inFlight: 0 });
+  const liveChunkRef = useRef<{ enabled: boolean; inFlight: number; timer?: number }>({ enabled: false, inFlight: 0 });
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -1258,22 +1258,63 @@ export default function App() {
       : MediaRecorder.isTypeSupported("audio/webm")
         ? "audio/webm"
         : "";
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-    liveChunkRef.current = { nextStartedAtMs: performance.now(), inFlight: 0 };
 
-    recorder.ondataavailable = (event) => {
-      const chunkStartedAtMs = liveChunkRef.current.nextStartedAtMs;
-      liveChunkRef.current.nextStartedAtMs += CFG.liveChunkMs;
-      if (event.data.size < CFG.liveChunkMinBytes) return;
-      if (Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) > CFG.liveChunkVoiceWindowMs) return;
-      void processLiveAudioChunk(event.data, chunkStartedAtMs);
+    const scheduleNext = (delayMs = 120) => {
+      if (!liveChunkRef.current.enabled) return;
+      liveChunkRef.current.timer = window.setTimeout(recordOnce, delayMs);
     };
-    recorder.onerror = () => {
-      setStatus("OpenAI 청크 STT 오류 - 브라우저 STT로 전환");
-      startRecognition();
+
+    const recordOnce = () => {
+      if (!liveChunkRef.current.enabled) return;
+      if (Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) > CFG.liveChunkVoiceWindowMs) {
+        scheduleNext(240);
+        return;
+      }
+      if (liveChunkRef.current.inFlight >= CFG.liveChunkMaxInflight) {
+        scheduleNext(240);
+        return;
+      }
+
+      const chunks: Blob[] = [];
+      const chunkStartedAtMs = performance.now();
+      let recorder: MediaRecorder;
+      try {
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      } catch {
+        setStatus("OpenAI 청크 STT 시작 실패 - 브라우저 STT로 전환");
+        liveChunkRef.current.enabled = false;
+        startRecognition();
+        return;
+      }
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blobType = mimeType || chunks[0]?.type || "audio/webm";
+        const blob = new Blob(chunks, { type: blobType });
+        if (
+          blob.size >= CFG.liveChunkMinBytes &&
+          Date.now() - (audioRef.current.lastVoiceActivityTs ?? 0) <= CFG.liveChunkVoiceWindowMs
+        ) {
+          void processLiveAudioChunk(blob, chunkStartedAtMs);
+        }
+        scheduleNext();
+      };
+      recorder.onerror = () => {
+        setStatus("OpenAI 청크 STT 조각 오류 - 다음 조각 대기");
+        scheduleNext(350);
+      };
+
+      audioRef.current.mediaRecorder = recorder;
+      recorder.start();
+      window.setTimeout(() => {
+        if (recorder.state === "recording") recorder.stop();
+      }, CFG.liveChunkMs);
     };
-    recorder.start(CFG.liveChunkMs);
-    audioRef.current.mediaRecorder = recorder;
+
+    liveChunkRef.current = { enabled: true, inFlight: 0 };
+    scheduleNext(0);
     setStatus("OpenAI 1초 청크 STT 대기 중");
     setDemoStep("라이브 음성을 1초 단위로 STT하고 단어 타임스탬프로 삐 처리합니다.");
     return true;
@@ -1677,6 +1718,8 @@ export default function App() {
 
   function stopSession() {
     const state = audioRef.current;
+    liveChunkRef.current.enabled = false;
+    if (liveChunkRef.current.timer) window.clearTimeout(liveChunkRef.current.timer);
     if (state.mediaRecorder?.state === "recording") state.mediaRecorder.stop();
     state.recognition?.stop();
     state.stream?.getTracks().forEach((track) => track.stop());
@@ -1689,7 +1732,7 @@ export default function App() {
     void state.ctx?.close();
     window.speechSynthesis.cancel();
     audioRef.current = { raisedSustainMs: 0, raisedLatched: false, lastRaisedTs: 0 };
-    liveChunkRef.current = { nextStartedAtMs: 0, inFlight: 0 };
+    liveChunkRef.current = { enabled: false, inFlight: 0 };
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
     announcingRef.current = false;
