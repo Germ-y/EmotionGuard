@@ -52,7 +52,7 @@ type IncidentReport = {
 const CFG = {
   audioFrameMs: 20,
   contextWindowMs: 3000,
-  outputDelay: 1.5,
+  outputDelay: 1.8,
   meterGain: 400,
   beepMinMs: 420,
   beepCharMs: 95,
@@ -96,13 +96,21 @@ const actionLabel: Record<PolicyAction, string> = {
   report: "보고서",
 };
 
+const sourceLabel: Record<PreviewSource, string> = {
+  local: "로컬 사전",
+  claude: "Claude API",
+  fallback: "Fallback(LLM 비활성)",
+  browser: "브라우저",
+  pending: "대기",
+};
+
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> = [
   { id: "input", label: "음성 입력", detail: "20ms Frame" },
   { id: "detect", label: "빠른 감지", detail: "RMS/STT/로컬 사전" },
   { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
-  { id: "context", label: "3초 맥락", detail: "Claude 판단" },
+  { id: "context", label: "3초 맥락", detail: "LLM/fallback 판단" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
 
@@ -167,7 +175,7 @@ function initialPreview(mode: AnalysisMode): ProtectionPreview {
   return {
     mode,
     title: mode === "immediate" ? "즉시 마스킹 처리" : "3초 맥락 처리",
-    status: mode === "immediate" ? "STT 인터림과 로컬 사전 감지 대기" : "3초 스냅샷과 Claude 문맥 판단 대기",
+    status: mode === "immediate" ? "STT 인터림과 로컬 사전 감지 대기" : "3초 스냅샷과 맥락 엔진 판단 대기",
     input: "-",
     output: "-",
     eventType: "normal",
@@ -186,9 +194,10 @@ function summarizePolicy(result: AnalyzeResponse) {
     return "즉시 위험 없음: 원문 전달";
   }
 
-  if (result.policyActions.includes("report")) return "Claude 문맥 판단: 경고·에스컬레이션·보고서 액션 반영";
-  if (result.eventType !== "normal") return "Claude 문맥 판단: 단계 상승과 경고 액션 반영";
-  return "Claude 문맥 판단: 특이 위험 없음";
+  const engine = sourceLabel[result.source];
+  if (result.policyActions.includes("report")) return `${engine} 맥락 판단: 경고·에스컬레이션·보고서 액션 반영`;
+  if (result.eventType !== "normal") return `${engine} 맥락 판단: 단계 상승과 경고 액션 반영`;
+  return `${engine} 맥락 판단: 특이 위험 없음`;
 }
 
 function previewFromResult(result: AnalyzeResponse, input: string): ProtectionPreview {
@@ -234,7 +243,7 @@ export default function App() {
   const [active, setActive] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
-  const [threshold, setThreshold] = useState(38);
+  const [threshold, setThreshold] = useState(42);
   const [gender, setGender] = useState<"male" | "female">("male");
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -555,9 +564,9 @@ export default function App() {
       if (result.policyActions.includes("mute")) beepProfanitySegment(result, text, timing);
       if (result.eventType !== "normal") setInterimText(`${eventLabel[result.eventType]} 감지 - ${result.maskedText}`);
     } else if (result.eventType !== "normal") {
-      setContextStatus(`Claude 문맥 판단: ${eventLabel[result.eventType]} / ${result.emotion}`);
+      setContextStatus(`${sourceLabel[result.source]} 맥락 판단: ${eventLabel[result.eventType]} / ${result.emotion}`);
     } else {
-      setContextStatus("Claude 문맥 판단: 특이 위험 없음");
+      setContextStatus(`${sourceLabel[result.source]} 맥락 판단: 특이 위험 없음`);
     }
 
     if (!logged || !result.policyActions.includes("warn_tts")) return;
@@ -811,7 +820,7 @@ export default function App() {
       await sleep(900);
 
       markDemoPhase("context");
-      setDemoStep("3초 문맥 판단 경로: Claude 스냅샷 분석 결과를 정책 엔진에 반영");
+      setDemoStep("3초 문맥 판단 경로: 맥락 엔진 분석 결과를 정책 엔진에 반영");
       setContextStatus("3초 문맥 스냅샷 분석 중");
       await analyzeDemo(script.text, false, "context_snapshot");
       if (type === "sexual") setEscalationStage("sexual", 2);
@@ -841,7 +850,7 @@ export default function App() {
     markDemoPhase("context");
     setContextPreview((prev) => ({
       ...prev,
-      status: "3초 문맥 스냅샷 분석 중: Claude 판단 대기",
+      status: "3초 문맥 스냅샷 분석 중: 맥락 엔진 판단 대기",
       input: snapshot,
       output: "문맥 판단 중",
       source: "pending",
@@ -1040,7 +1049,7 @@ export default function App() {
                   <time>[{log.timestamp}]</time>
                   <div>
                     <strong>원문 문장 비공개 기록됨 · {pathLabel[log.detectionPath]}</strong>
-                    <small>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · {log.source}</small>
+                    <small>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"} · {sourceLabel[log.source]}</small>
                   </div>
                 </article>
               ))}
@@ -1075,7 +1084,7 @@ export default function App() {
               <article key={preview.mode} className={`preview ${preview.eventType}`}>
                 <div className="preview-head">
                   <strong>{preview.title}</strong>
-                  <span>{pathLabel[preview.mode]} · {eventLabel[preview.eventType]} · {preview.source}</span>
+                  <span>{pathLabel[preview.mode]} · {eventLabel[preview.eventType]} · {sourceLabel[preview.source]}</span>
                 </div>
                 <p>{preview.status}</p>
                 <dl>

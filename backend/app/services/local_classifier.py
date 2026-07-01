@@ -58,6 +58,76 @@ def mask_abuse(text: str) -> str:
     return masked
 
 
+def _has_any(compact: str, words: list[str]) -> bool:
+    return any(normalize(word) in compact for word in words)
+
+
+def _contextual_fallback(text: str) -> AnalysisResult | None:
+    data = load_dictionaries()
+    compact = normalize(text)
+
+    if any(normalize(exception) in compact for exception in data["sexual_exceptions"]):
+        return None
+
+    sexual_rules = [
+        (
+            ["퇴근몇시", "퇴근시간", "몇시에끝나"],
+            ["기다릴게", "기다릴께", "기다리겠다", "기다리고있", "찾아갈게", "찾아갈께"],
+            ["성희롱", "스토킹"],
+        ),
+        (
+            ["집", "주소", "사는곳"],
+            ["알아낼", "찾아갈", "기다릴", "따라갈"],
+            ["성희롱", "스토킹"],
+        ),
+        (
+            ["목소리"],
+            ["또전화", "계속듣고", "듣고싶", "반했", "설레", "섹시"],
+            ["성희롱"],
+        ),
+        (
+            ["개인연락처", "개인번호", "카톡아이디", "인스타"],
+            ["알려줘", "줄래", "줘", "궁금"],
+            ["성희롱"],
+        ),
+        (
+            ["얼굴"],
+            ["보여줘", "보고싶", "궁금"],
+            ["성희롱"],
+        ),
+    ]
+
+    for anchors, triggers, categories in sexual_rules:
+        if _has_any(compact, anchors) and _has_any(compact, triggers):
+            return AnalysisResult(
+                abusive=True,
+                severity="severe",
+                categories=categories,
+                emotion="threatening" if "스토킹" in categories else "angry",
+                sexual=True,
+                source="fallback",
+                triggeredWords=[*anchors, *triggers],
+            )
+
+    threat_rules = [
+        (["찾아갈게", "찾아간다", "가만안둬", "가만두지않"], ["위협"]),
+        (["죽여버", "죽인다", "죽여"], ["위협"]),
+    ]
+    for triggers, categories in threat_rules:
+        if _has_any(compact, triggers):
+            return AnalysisResult(
+                abusive=True,
+                severity="severe",
+                categories=categories,
+                emotion="threatening",
+                sexual=False,
+                source="fallback",
+                triggeredWords=triggers,
+            )
+
+    return None
+
+
 def conservative_fail(text: str) -> AnalysisResult:
     data = load_dictionaries()
     compact = normalize(text)
@@ -73,6 +143,10 @@ def conservative_fail(text: str) -> AnalysisResult:
             source="fallback",
             triggeredWords=triggered,
         )
+
+    contextual = _contextual_fallback(text)
+    if contextual:
+        return contextual
 
     return AnalysisResult(
         abusive=False,

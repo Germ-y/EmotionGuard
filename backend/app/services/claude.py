@@ -19,6 +19,8 @@ ANALYST_SYSTEM = """당신은 콜센터 상담사 보호 시스템의 실시간 
 - abusive=false: 욕설이나 모욕이 없는 정당한 불만 또는 항의
 - "존맛", "개이득", "개꿀"처럼 악의 없는 단순 강조이면 abusive=false
 - 애매한 경우는 abusive=false
+- severity="mild": 공격성이 있으나 직접 욕설/협박은 약함
+- severity="severe": 직접 욕설, 인신공격, 협박, 성희롱, 스토킹성 발화가 명확함
 
 emotion 판정:
 - threatening: 협박 또는 위협 뉘앙스가 있음
@@ -30,6 +32,7 @@ sexual 판정 기준:
 - sexual=true 이면 반드시 abusive=true도 함께 설정
 - 신체/외모 품평, 성적 발언, 만남 강요, 스토킹, 성차별 발언 포함
 - 맥락상 성희롱이 명확한 경우에만 sexual=true
+- 성희롱은 폭언/고성과 독립 카운터로 처리되므로, 의심 수준이 낮으면 sexual=false
 
 성희롱 예시:
 - "목소리 섹시하네요, 만나고 싶다" -> sexual=true
@@ -46,7 +49,11 @@ sexual 판정 기준:
 
 다산콜센터 맥락:
 교통, 수도, 행정, 복지, 환경 관련 민원 문맥이면 sexual=false를 우선한다.
-상담사 개인을 직접 겨냥하는 것이 명확할 때만 sexual=true로 판단한다."""
+상담사 개인을 직접 겨냥하는 것이 명확할 때만 sexual=true로 판단한다.
+
+출력 정책:
+- JSON 외 텍스트를 절대 출력하지 않는다.
+- categories에는 "욕설", "위협", "성희롱", "성차별", "스토킹", "인신공격" 같은 짧은 한국어 라벨만 넣는다."""
 
 
 def _coerce_result(payload: dict[str, Any]) -> AnalysisResult:
@@ -97,4 +104,3 @@ async def classify_with_claude(text: str) -> AnalysisResult:
         return _coerce_result(json.loads(match.group(0)))
     except Exception:
         return conservative_fail(text)
-
