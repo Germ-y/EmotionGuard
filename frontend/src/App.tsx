@@ -528,7 +528,7 @@ export default function App() {
     setDemoDialogue((prev) => [
       ...prev,
       { id: crypto.randomUUID(), role, text, tone, timestamp },
-    ].slice(-8));
+    ].slice(-80));
   }
 
   useEffect(() => {
@@ -781,9 +781,10 @@ export default function App() {
   }
 
   function setEscalationStage(kind: keyof EscalationState, stage: number) {
+    const capped = kind === "abuse" ? clamp(stage, 0, 4) : clamp(stage, 0, 2);
     const next = {
       ...escalationRef.current,
-      [kind]: kind === "abuse" ? clamp(stage, 0, 4) : clamp(stage, 0, 2),
+      [kind]: Math.max(escalationRef.current[kind], capped),
     };
     escalationRef.current = next;
     setEscalation(next);
@@ -967,9 +968,12 @@ export default function App() {
 
   async function runDemo(type: "abuse" | "sexual" | "raised" | "escalation") {
     if (active) stopSession();
+    const demoBaseSeconds = elapsed;
     const setDemoClock = (seconds: number) => {
-      setElapsed(seconds);
-      sessionStartedAtRef.current = new Date(Date.now() - seconds * 1000);
+      const nextSeconds = demoBaseSeconds + seconds;
+      setElapsed(nextSeconds);
+      sessionStartedAtRef.current = new Date(Date.now() - nextSeconds * 1000);
+      return nextSeconds;
     };
     const say = async (
       role: DemoDialogueLine["role"],
@@ -981,7 +985,7 @@ export default function App() {
       markDemoPhase("input");
       setLevel(tone === "risk" ? 48 : 18);
       setStatus(role === "상담사" ? "상담사 발화 지연 없이 전달" : "고객 음성 입력");
-      pushDemoDialogue(role, text, tone, formatDuration(seconds));
+      pushDemoDialogue(role, text, tone, formatDuration(demoBaseSeconds + seconds));
       await sleep(620);
     };
     const riskTurn = async (options: {
@@ -998,7 +1002,7 @@ export default function App() {
       markDemoPhase("input");
       setLevel(options.level);
       setStatus("고객 음성 입력");
-      pushDemoDialogue("고객", options.text, "risk", formatDuration(options.seconds));
+      pushDemoDialogue("고객", options.text, "risk", formatDuration(demoBaseSeconds + options.seconds));
       setDemoStep("고객 발화가 보호 게이트웨이로 들어왔습니다.");
       await sleep(520);
 
@@ -1011,7 +1015,7 @@ export default function App() {
 
       markDemoPhase("mask");
       setStatus(options.maskStatus);
-      pushDemoDialogue("시스템", options.systemText, "system", formatDuration(options.seconds + 1));
+      pushDemoDialogue("시스템", options.systemText, "system", formatDuration(demoBaseSeconds + options.seconds + 1));
       await sleep(620);
 
       setDemoClock(options.seconds + 3);
@@ -1023,19 +1027,8 @@ export default function App() {
     };
 
     setError("");
-    setLogs([]);
-    logsRef.current = [];
-    reportLogsRef.current = [];
-    setLatestDetection(null);
-    countersRef.current = initialCounts();
-    seenEventRef.current.clear();
-    contextBufferRef.current = [];
-    resetEscalation();
-    setElapsed(0);
     setActive(false);
     setMuted(false);
-    setDemoDialogue([]);
-    setDemoClock(0);
     markDemoPhase("idle");
     interimCheckRef.current.lastText = "";
     speechStartAtRef.current = null;
@@ -1073,8 +1066,8 @@ export default function App() {
         setDemoClock(25);
         setDemoStep("Policy Engine: 4단계 도달, 상담 종료 및 보고서 생성");
         setStatus("4단계 도달: 상담 종료 안내 및 보고서 생성");
-        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system", formatDuration(25));
-        generateReport("4단계 상승 데모 종료", { abuse: 4, sexual: 0 }, 25);
+        pushDemoDialogue("시스템", "4단계 도달로 상담 종료 안내와 특이민원 보고서가 자동 생성됩니다.", "system", formatDuration(demoBaseSeconds + 25));
+        generateReport("4단계 상승 데모 종료", escalationRef.current, demoBaseSeconds + 25);
       } catch {
         setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
       }
@@ -1147,8 +1140,8 @@ export default function App() {
       setDemoClock(14);
       setDemoStep("Policy Engine: 경고, 타임스탬프, 보고서 반영 완료");
       setStatus("특이민원 보고서 생성 완료");
-      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", formatDuration(14));
-      generateReport("데모 종료", escalationRef.current, 14);
+      pushDemoDialogue("시스템", "상담 종료 시 특이민원 보고서에 증빙 발화가 자동 반영됩니다.", "system", formatDuration(demoBaseSeconds + 14));
+      generateReport("데모 종료", escalationRef.current, demoBaseSeconds + 14);
     } catch {
       setError("데모 실행 중 분석 서버 연결에 실패했습니다. 백엔드 8000 포트를 확인해주세요.");
     }
