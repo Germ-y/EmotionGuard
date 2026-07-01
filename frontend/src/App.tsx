@@ -2332,9 +2332,7 @@ export default function App() {
         <strong>DEMO</strong>
         <span>{active ? demoStep : "상담 시작 후 데모를 실행합니다."}</span>
         <button disabled={!active} onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
-        <button disabled={!active} onClick={() => void runDemo("raised")}>고성 완화</button>
         <button disabled={!active} onClick={() => void runDemo("sexual")}>성희롱 경고</button>
-        <button disabled={!active} onClick={() => void runDemo("escalation")}>4단계 상승</button>
       </aside>
     </main>
   );
