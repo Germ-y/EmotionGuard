@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalysisMode, analyzeUtterance, AnalyzeResponse, EventType, PolicyAction } from "./lib/api";
 import { Jungle } from "./lib/audio/jungle";
 
@@ -255,6 +255,7 @@ export default function App() {
   const interimCheckRef = useRef<{ timer?: number; lastText: string }>({ lastText: "" });
   const speechStartAtRef = useRef<number | null>(null);
   const sessionStartedAtRef = useRef<Date | null>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -278,6 +279,7 @@ export default function App() {
       return acc;
     }, initialCounts());
   }, [logs]);
+  const timelineEntries = useMemo(() => logs.slice().reverse(), [logs]);
 
   const abuseStage = escalation.abuse;
   const sexualStage = escalation.sexual;
@@ -293,6 +295,12 @@ export default function App() {
     }
     setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
   }
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
+  }, [logs]);
 
   async function startAudio() {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -453,7 +461,7 @@ export default function App() {
   }
 
   function appendLog(result: AnalyzeResponse, text: string) {
-    const fingerprint = `${result.eventType}:${result.maskedText}`;
+    const fingerprint = `${result.eventType}:${result.maskedText}:${Math.floor(Date.now() / 1200)}`;
     const entry: LogEntry = { ...result, id: crypto.randomUUID(), text, time: now() };
     reportLogsRef.current = [entry, ...reportLogsRef.current].slice(0, 200);
 
@@ -461,8 +469,8 @@ export default function App() {
     seenEventRef.current.add(fingerprint);
 
     countersRef.current[result.eventType] += 1;
-    logsRef.current = [entry, ...logsRef.current].slice(0, 100);
-    setLogs((prev) => [entry, ...prev].slice(0, 100));
+    logsRef.current = [entry, ...logsRef.current].slice(0, 200);
+    setLogs((prev) => [entry, ...prev].slice(0, 200));
     return true;
   }
 
@@ -1109,13 +1117,15 @@ export default function App() {
               </>
             )}
           </section>
-          <h2>실시간 로그</h2>
-          <div className="logs">
-            {logs.length === 0 && <p className="empty">아직 감지된 로그가 없습니다.</p>}
-            {logs.map((log) => (
-              <article key={log.id} className={`log ${log.eventType}`}>
+          <h2>누적 감지 타임라인</h2>
+          <div className="logs timeline" ref={timelineRef}>
+            {timelineEntries.length === 0 && <p className="empty">감지되는 즉시 여기에 누적됩니다.</p>}
+            {timelineEntries.map((log, index) => (
+              <article key={log.id} className={`log timeline-item ${log.eventType}`}>
+                <b>{String(index + 1).padStart(2, "0")}</b>
                 <small>{log.time} · {eventLabel[log.eventType]} · {pathLabel[log.detectionPath]} · {log.source}</small>
                 <p>{log.maskedText}</p>
+                <span>{log.policyActions.map((action) => actionLabel[action]).join(" · ") || "기록"}</span>
               </article>
             ))}
           </div>
