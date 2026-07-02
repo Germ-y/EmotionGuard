@@ -36,6 +36,9 @@ type VoicemodEvent = {
   msg?: string;
   actionObject?: {
     value?: boolean;
+    enabled?: boolean;
+    voiceChangerEnabled?: boolean;
+    backgroundEnabled?: boolean;
     voiceID?: string;
     voices?: VoicemodVoice[];
     status?: {
@@ -44,6 +47,10 @@ type VoicemodEvent = {
     };
   };
   payload?: {
+    value?: boolean;
+    enabled?: boolean;
+    voiceChangerEnabled?: boolean;
+    backgroundEnabled?: boolean;
     status?: {
       code?: number;
       description?: string;
@@ -68,6 +75,20 @@ function isNoEffectVoice(voiceID: string) {
   return voiceID === NOFX_VOICE_ID || voiceID === NOFX_INTERNAL_ID;
 }
 
+function readBooleanStatus(message: VoicemodEvent) {
+  const candidates = [
+    message.actionObject?.value,
+    message.actionObject?.enabled,
+    message.actionObject?.voiceChangerEnabled,
+    message.actionObject?.backgroundEnabled,
+    message.payload?.value,
+    message.payload?.enabled,
+    message.payload?.voiceChangerEnabled,
+    message.payload?.backgroundEnabled,
+  ];
+  return candidates.find((value): value is boolean => typeof value === "boolean") ?? null;
+}
+
 export class VoicemodClient {
   private socket: WebSocket | null = null;
   private connecting: Promise<boolean> | null = null;
@@ -77,6 +98,7 @@ export class VoicemodClient {
   private pending: PendingMessage[] = [];
   private authorized = false;
   private voiceChangerEnabled: boolean | null = null;
+  private backgroundEnabled: boolean | null = null;
   private voices: VoicemodVoice[] = [];
 
   constructor(
@@ -95,23 +117,28 @@ export class VoicemodClient {
       return false;
     }
 
-    this.desiredVoiceChange = enabled;
-    const nextVoice = enabled ? this.resolveVoiceId() : NOFX_VOICE_ID;
-    if (
-      enabled &&
-      this.requestedVoice === nextVoice &&
-      this.socket?.readyState === WebSocket.OPEN &&
-      this.authorized
-    ) {
-      return true;
-    }
-
     const connected = await this.connect();
     if (!connected) return false;
 
-    this.requestedVoice = nextVoice;
-    this.send("loadVoice", { voiceID: nextVoice });
-    if (!enabled) this.disableVoiceChanger();
+    this.desiredVoiceChange = enabled;
+    this.stopSoundboard();
+    this.disableBackgroundEffects();
+    if (!enabled) {
+      this.disableVoiceChanger();
+      this.onStatus?.(this.authorized ? "ready" : "pending");
+      return true;
+    }
+
+    const nextVoice = this.resolveVoiceId();
+    const voiceAlreadySelected = this.currentVoice === nextVoice || this.requestedVoice === nextVoice;
+    if (!voiceAlreadySelected) {
+      this.requestedVoice = nextVoice;
+      this.send("loadVoice", { voiceID: nextVoice });
+    } else {
+      this.send("getVoiceChangerStatus", {});
+      this.enableVoiceChanger();
+    }
+
     this.onStatus?.(this.authorized ? (enabled ? "active" : "ready") : "pending");
     return true;
   }
@@ -123,6 +150,7 @@ export class VoicemodClient {
     this.desiredVoiceChange = false;
     this.authorized = false;
     this.voiceChangerEnabled = null;
+    this.backgroundEnabled = null;
     this.socket?.close();
     this.socket = null;
     this.connecting = null;
@@ -153,6 +181,7 @@ export class VoicemodClient {
           this.requestedVoice = NOFX_VOICE_ID;
           this.authorized = false;
           this.voiceChangerEnabled = null;
+          this.backgroundEnabled = null;
           this.onStatus?.("error");
         }
       });
@@ -201,11 +230,17 @@ export class VoicemodClient {
       return;
     }
     const voiceID = typeof payload.voiceID === "string" ? payload.voiceID : "";
+    if (action === "loadVoice" && isNoEffectVoice(voiceID)) {
+      this.disableVoiceChanger();
+      return;
+    }
     if (action === "loadVoice" && this.authorized && this.voiceChangerEnabled === false && !isNoEffectVoice(voiceID)) {
-      this.socket.send(JSON.stringify({ id: requestId(), action: "toggleVoiceChanger", payload: {} }));
-      this.voiceChangerEnabled = true;
+      this.enableVoiceChanger();
     }
     this.socket.send(JSON.stringify(message));
+    if (action === "loadVoice" && !isNoEffectVoice(voiceID)) {
+      this.send("getVoiceChangerStatus", {});
+    }
   }
 
   private flushPending() {
@@ -234,6 +269,23 @@ export class VoicemodClient {
     this.voiceChangerEnabled = false;
   }
 
+  private enableVoiceChanger() {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.authorized || this.voiceChangerEnabled !== false) return;
+    this.socket.send(JSON.stringify({ id: requestId(), action: "toggleVoiceChanger", payload: {} }));
+    this.voiceChangerEnabled = true;
+  }
+
+  private stopSoundboard() {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.authorized) return;
+    this.socket.send(JSON.stringify({ id: requestId(), action: "stopAllMemeSounds", payload: {} }));
+  }
+
+  private disableBackgroundEffects() {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.authorized || this.backgroundEnabled !== true) return;
+    this.socket.send(JSON.stringify({ id: requestId(), action: "toggleBackground", payload: {} }));
+    this.backgroundEnabled = false;
+  }
+
   private handleMessage(event: MessageEvent) {
     let message: VoicemodEvent;
     try {
@@ -247,29 +299,55 @@ export class VoicemodClient {
       return;
     }
 
-    if (message.action === "registerClient" || message.actionType === "registerClient") {
+    const actionName = message.actionType || message.action || "";
+
+    if (actionName === "registerClient") {
       this.authorized = (message.payload?.status?.code ?? message.actionObject?.status?.code) === 200;
       this.onStatus?.(this.authorized ? "ready" : "error");
       if (this.authorized) {
+        this.stopSoundboard();
         this.send("getVoiceChangerStatus", {});
+        this.send("getBackgroundEffectStatus", {});
+        this.send("getVoices", {});
         this.flushPending();
       }
       return;
     }
 
-    if (
-      message.actionType === "toggleVoiceChanger" ||
-      message.actionType === "voiceChangerEnabledEvent" ||
-      message.actionType === "voiceChangerDisabledEvent"
-    ) {
-      if (message.actionType === "voiceChangerEnabledEvent") this.voiceChangerEnabled = true;
-      else if (message.actionType === "voiceChangerDisabledEvent") this.voiceChangerEnabled = false;
-      else if (typeof message.actionObject?.value === "boolean") this.voiceChangerEnabled = message.actionObject.value;
-      if (!this.desiredVoiceChange) this.disableVoiceChanger();
+    if (actionName === "getVoiceChangerStatus") {
+      const enabled = readBooleanStatus(message);
+      if (enabled !== null) this.voiceChangerEnabled = enabled;
+      if (this.desiredVoiceChange) this.enableVoiceChanger();
+      else this.disableVoiceChanger();
       return;
     }
 
-    if (message.actionType === "getVoices") {
+    if (actionName === "getBackgroundEffectStatus" || actionName === "toggleBackground") {
+      const enabled = readBooleanStatus(message);
+      if (enabled !== null) this.backgroundEnabled = enabled;
+      this.disableBackgroundEffects();
+      return;
+    }
+
+    if (actionName === "stopAllMemeSounds") return;
+
+    if (
+      actionName === "toggleVoiceChanger" ||
+      actionName === "voiceChangerEnabledEvent" ||
+      actionName === "voiceChangerDisabledEvent"
+    ) {
+      if (actionName === "voiceChangerEnabledEvent") this.voiceChangerEnabled = true;
+      else if (actionName === "voiceChangerDisabledEvent") this.voiceChangerEnabled = false;
+      else {
+        const enabled = readBooleanStatus(message);
+        if (enabled !== null) this.voiceChangerEnabled = enabled;
+      }
+      if (!this.desiredVoiceChange) this.disableVoiceChanger();
+      else this.enableVoiceChanger();
+      return;
+    }
+
+    if (actionName === "getVoices") {
       this.voices = message.actionObject?.voices ?? [];
       if (this.desiredVoiceChange) {
         const nextVoice = this.resolveVoiceId();
@@ -281,7 +359,7 @@ export class VoicemodClient {
       return;
     }
 
-    if (message.actionType === "voiceChangedEvent") {
+    if (actionName === "voiceChangedEvent") {
       const voiceID = message.actionObject?.voiceID;
       if (voiceID) {
         const noEffect = isNoEffectVoice(voiceID) || !this.desiredVoiceChange;
@@ -291,7 +369,7 @@ export class VoicemodClient {
       return;
     }
 
-    if (message.actionType === "getCurrentVoice") {
+    if (actionName === "getCurrentVoice") {
       const voiceID = message.actionObject?.voiceID;
       if (voiceID) {
         const noEffect = isNoEffectVoice(voiceID) || !this.desiredVoiceChange;
