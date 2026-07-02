@@ -242,10 +242,14 @@ function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | 
   return -(curve.base + curve.span * Math.min(1, over));
 }
 
-function loudnessGainForLevel(level: number, threshold: number) {
+function loudnessGainForLevel(level: number, threshold: number, strength: number) {
   if (level < threshold) return 1;
   const over = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
-  return clamp(0.86 - over * 0.32, 0.54, 0.86);
+  const ratio = clamp(strength / 100, 0, 1);
+  const startReduction = 0.05 + ratio * 0.14;
+  const maxReduction = 0.18 + ratio * 0.38;
+  const reduction = startReduction + (maxReduction - startReduction) * over;
+  return clamp(1 - reduction, 1 - maxReduction, 1 - startReduction);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -929,6 +933,7 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
+  const [attenuationStrength, setAttenuationStrength] = useState(65);
   const [gender, setGender] = useState<"male" | "female">("male");
   const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
@@ -1292,7 +1297,7 @@ export default function App() {
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
       }
       if (current.loudnessGain && current.ctx) {
-        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, threshold), current.ctx.currentTime, 0.05);
+        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, threshold, attenuationStrength), current.ctx.currentTime, 0.05);
       }
 
       if (!announcingRef.current && nextLevel >= threshold) {
@@ -2601,6 +2606,11 @@ export default function App() {
               <span>고성 기준</span>
               <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
               <b>{threshold}%</b>
+            </label>
+            <label className="threshold-control attenuation-control">
+              <span>완화 강도</span>
+              <input type="range" min={0} max={100} value={attenuationStrength} onChange={(event) => setAttenuationStrength(Number(event.target.value))} />
+              <b>{attenuationStrength}%</b>
             </label>
             <div className="voice-control">
               <span>음성 보정</span>

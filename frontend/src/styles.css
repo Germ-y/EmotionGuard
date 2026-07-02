@@ -573,7 +573,7 @@ button:hover { transform: translateY(-1px); }
 .guard-panel {
   order: 1;
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) minmax(210px, 1.2fr) auto auto;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(170px, 1fr) minmax(170px, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   border: 1px solid var(--line);
@@ -610,6 +610,9 @@ button:hover { transform: translateY(-1px); }
 }
 .threshold-control {
   min-width: 0;
+}
+.attenuation-control input {
+  accent-color: #4f7dff;
 }
 .threshold-control input {
   min-width: 120px;
