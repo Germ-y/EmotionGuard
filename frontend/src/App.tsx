@@ -211,6 +211,7 @@ const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
 const REPORT_ARCHIVE_LIMIT = 80;
 const MONITOR_GAIN = 0.5;
 const SHOW_DEMO_REMOTE = false;
+const USE_VOICEMOD_VOICE_CHANGE = false;
 
 const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
   "parking-normal": {
@@ -1222,6 +1223,12 @@ export default function App() {
   }
 
   function commandVoicemodVoiceChange(enabled: boolean, force = false) {
+    if (!USE_VOICEMOD_VOICE_CHANGE) {
+      lastVoicemodActiveRef.current = false;
+      if (voicemodStatusRef.current !== "disabled") updateVoicemodStatus("disabled");
+      return;
+    }
+
     const nowMs = Date.now();
     const shouldRetryActive =
       enabled &&
@@ -1458,6 +1465,14 @@ export default function App() {
     source.connect(dryDelay);
     dryDelay.connect(dryGain);
     dryGain.connect(loudnessGain);
+    dryDelay.connect(voiceChangeFilter);
+    voiceChangeFilter.connect(voiceChangeShaper);
+    voiceChangeShaper.connect(modulationGain);
+    modulationGain.connect(voiceChangeGain);
+    voiceChangeGain.connect(loudnessGain);
+    modulationCarrier.connect(modulationCarrierGain);
+    modulationCarrierGain.connect(modulationGain.gain);
+    modulationCarrier.start();
     source.connect(jungle.input);
     jungle.output.connect(processedDelay);
     processedDelay.connect(processedGain);
@@ -1580,14 +1595,16 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
+        const dryMix = voiceChangeActive ? 0.03 : 1;
         const processedMix = 0;
-        current.dryGain.gain.setTargetAtTime(1, current.ctx.currentTime, 0.025);
+        current.dryGain.gain.setTargetAtTime(dryMix, current.ctx.currentTime, 0.025);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        current.voiceChangeGain.gain.setTargetAtTime(0, current.ctx.currentTime, 0.02);
-        current.modulationGain.gain.setTargetAtTime(1, current.ctx.currentTime, 0.02);
-        current.modulationCarrierGain.gain.setTargetAtTime(0, current.ctx.currentTime, 0.02);
+        const strength = clamp(attenuationStrengthRef.current / 100, 0, 1);
+        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.95 : 0, current.ctx.currentTime, 0.02);
+        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.58 : 1, current.ctx.currentTime, 0.02);
+        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.18 + strength * 0.22 : 0, current.ctx.currentTime, 0.02);
       }
       commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
