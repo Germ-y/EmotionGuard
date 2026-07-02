@@ -303,16 +303,16 @@ function pitchProtectionForShout(
   const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
   const triggerStrength = Math.max(0.35, levelOver);
   const ratio = clamp(strength / 100, 0, 1);
-  const baseDrop = 0.58;
-  const spanDrop = 0.28;
-  const offset = -(baseDrop + spanDrop * triggerStrength) * (0.9 + ratio * 0.25);
+  const baseLift = 0.34;
+  const spanLift = 0.24;
+  const offset = (baseLift + spanLift * triggerStrength) * (0.85 + ratio * 0.22);
 
   return {
     active: true,
     levelTriggered,
     pitchTriggered,
     modulationTriggered,
-    offset: clamp(offset, -0.95, -0.45),
+    offset: clamp(offset, 0.32, 0.72),
   };
 }
 
@@ -1660,17 +1660,16 @@ export default function App() {
       current.jungle.setPitchOffset(outputPitchOffset);
       if (current.dryGain && current.processedGain && current.ctx) {
         const effectAt = current.ctx.currentTime + CFG.outputDelay;
-        const processedMix = voiceChangeActive ? 1 : pitchOnlySoftening ? pitchSoftening.mix : 0;
-        const dryMix = voiceChangeActive ? 0 : 1 - processedMix;
+        const processedMix = voiceChangeActive ? 0.92 : pitchOnlySoftening ? pitchSoftening.mix : 0;
+        const dryMix = voiceChangeActive ? 0.08 : 1 - processedMix;
         current.dryGain.gain.setTargetAtTime(dryMix, effectAt, 0.012);
         current.processedGain.gain.setTargetAtTime(processedMix, effectAt, 0.012);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        const strength = clamp(attenuationStrengthRef.current / 100, 0, 1);
         const effectAt = current.ctx.currentTime + CFG.outputDelay;
-        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.52 : 0, effectAt, 0.012);
-        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.34 : 1, effectAt, 0.012);
-        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.34 + strength * 0.26 : 0, effectAt, 0.012);
+        current.voiceChangeGain.gain.setTargetAtTime(0, effectAt, 0.012);
+        current.modulationGain.gain.setTargetAtTime(1, effectAt, 0.012);
+        current.modulationCarrierGain.gain.setTargetAtTime(0, effectAt, 0.012);
       }
       commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
