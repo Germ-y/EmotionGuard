@@ -273,18 +273,18 @@ function pitchProtectionForShout(
   }
 
   const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
-  const pitchOver = pitchHz ? clamp((pitchHz - pitchThreshold) / 150, 0, 1) : 0;
+  const pitchOver = pitchHz ? clamp((pitchHz - pitchThreshold) / 120, 0, 1) : 0;
   const triggerStrength = Math.max(0.35, levelOver, pitchOver);
   const ratio = clamp(strength / 100, 0, 1);
-  const baseDrop = 0.18;
-  const spanDrop = 0.3;
-  const offset = -(baseDrop + spanDrop * triggerStrength) * (0.75 + ratio * 0.55);
+  const baseDrop = 0.58;
+  const spanDrop = 0.28;
+  const offset = -(baseDrop + spanDrop * triggerStrength) * (0.9 + ratio * 0.25);
 
   return {
     active: true,
     levelTriggered,
     pitchTriggered,
-    offset: clamp(offset, -0.48, -0.1),
+    offset: clamp(offset, -0.95, -0.45),
   };
 }
 
@@ -1082,6 +1082,8 @@ export default function App() {
     dryGain?: GainNode;
     processedGain?: GainNode;
     loudnessGain?: GainNode;
+    modulationGain?: GainNode;
+    modulationCarrierGain?: GainNode;
     raf?: number;
     raisedSustainMs: number;
     raisedLatched: boolean;
@@ -1332,12 +1334,19 @@ export default function App() {
     const dryGain = ctx.createGain();
     const processedGain = ctx.createGain();
     const loudnessGain = ctx.createGain();
+    const modulationGain = ctx.createGain();
+    const modulationCarrier = ctx.createOscillator();
+    const modulationCarrierGain = ctx.createGain();
     const outGain = ctx.createGain();
     dryDelay.delayTime.value = CFG.outputDelay;
     processedDelay.delayTime.value = CFG.outputDelay;
     dryGain.gain.value = 1;
     processedGain.gain.value = 0;
     loudnessGain.gain.value = 1;
+    modulationGain.gain.value = 1;
+    modulationCarrier.type = "square";
+    modulationCarrier.frequency.value = 54;
+    modulationCarrierGain.gain.value = 0;
     outGain.gain.value = monitorOn ? MONITOR_GAIN : 0;
 
     source.connect(dryDelay);
@@ -1345,12 +1354,28 @@ export default function App() {
     dryGain.connect(loudnessGain);
     source.connect(jungle.input);
     jungle.output.connect(processedDelay);
-    processedDelay.connect(processedGain);
+    modulationCarrier.connect(modulationCarrierGain);
+    modulationCarrierGain.connect(modulationGain.gain);
+    processedDelay.connect(modulationGain);
+    modulationGain.connect(processedGain);
     processedGain.connect(loudnessGain);
     loudnessGain.connect(outGain);
     outGain.connect(ctx.destination);
+    modulationCarrier.start();
 
-    audioRef.current = { ...audioRef.current, stream, ctx, analyser, jungle, outGain, dryGain, processedGain, loudnessGain };
+    audioRef.current = {
+      ...audioRef.current,
+      stream,
+      ctx,
+      analyser,
+      jungle,
+      outGain,
+      dryGain,
+      processedGain,
+      loudnessGain,
+      modulationGain,
+      modulationCarrierGain,
+    };
     runMeter();
   }
 
@@ -1432,7 +1457,7 @@ export default function App() {
         setAudioFeatures(nextFeatures);
         if (!voiceActivity) setEmotionPrediction(null);
         const nextStatus = pitchProtection.pitchTriggered
-          ? "피치 기준 초과 다운피치"
+          ? "피치 기준 초과 변조"
           : pitchProtection.levelTriggered
             ? "고성 구간 볼륨 완화"
           : muted
@@ -1448,9 +1473,13 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = offset < 0 ? 0.85 : 0;
+        const processedMix = pitchProtection.pitchTriggered ? 1 : offset < 0 ? 0.85 : 0;
         current.dryGain.gain.setTargetAtTime(1 - processedMix, current.ctx.currentTime, 0.04);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
+      }
+      if (current.modulationGain && current.modulationCarrierGain && current.ctx) {
+        current.modulationGain.gain.setTargetAtTime(pitchProtection.pitchTriggered ? 0.58 : 1, current.ctx.currentTime, 0.025);
+        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.pitchTriggered ? 0.48 : 0, current.ctx.currentTime, 0.025);
       }
       if (current.loudnessGain && current.ctx) {
         current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
@@ -1464,9 +1493,9 @@ export default function App() {
           markDemoPhase("detect");
           markDemoPhase("mask");
           setInterimText(pitchProtection.pitchTriggered
-            ? "피치 기준 초과 감지 - 출력 커서에서 음정을 확 낮춰 전달합니다."
+            ? "피치 기준 초과 감지 - 출력 커서에서 음성을 변조합니다."
             : "RMS 고성 감지 - 출력 커서에서 볼륨을 낮춰 전달합니다.");
-          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 다운피치" : "고성 구간 볼륨 완화");
+          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 변조" : "고성 구간 볼륨 완화");
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
