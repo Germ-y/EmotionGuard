@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "trainedAt": "2026-07-02T02:11:09.924667+00:00",
+  "featureKeys": [
+    "audio_rms",
+    "audio_peak",
+    "audio_zero_crossing_rate",
+    "spectral_centroid_hz",
+    "pitch_hz",
+    "pitch_confidence"
+  ],
+  "stats": {
+    "audio_rms": {
+      "mean": 0.04220154,
+      "std": 0.0210085,
+      "min": 0.0136178,
+      "max": 0.122722
+    },
+    "audio_peak": {
+      "mean": 0.41246299,
+      "std": 0.22285278,
+      "min": 0.0971069,
+      "max": 1.0
+    },
+    "audio_zero_crossing_rate": {
+      "mean": 0.0538663,
+      "std": 0.01207741,
+      "min": 0.0226356,
+      "max": 0.0926504
+    },
+    "spectral_centroid_hz": {
+      "mean": 3078.5420925,
+      "std": 654.69466866,
+      "min": 1793.9625,
+      "max": 5414.1069
+    },
+    "pitch_hz": {
+      "mean": 266.62943648,
+      "std": 81.77182162,
+      "min": 82.1229,
+      "max": 420.0
+    },
+    "pitch_confidence": {
+      "mean": 0.55436,
+      "std": 0.21475981,
+      "min": 0.0793,
+      "max": 0.952
+    }
+  },
+  "rows": 160,
+  "labelCounts": {
+    "angry": 20,
+    "frustrated": 60,
+    "normal": 80
+  },
+  "mode": "centroid",
+  "description": "SKT emotion-index supervised centroid model for live acoustic emotion prediction.",
+  "centroids": {
+    "normal": {
+      "audio_rms": -0.01998096,
+      "audio_peak": 0.00130275,
+      "audio_zero_crossing_rate": -0.05929345,
+      "spectral_centroid_hz": 0.01278712,
+      "pitch_hz": -0.04578877,
+      "pitch_confidence": 0.11605989
+    },
+    "angry": {
+      "audio_rms": 0.53386129,
+      "audio_peak": 0.39062429,
+      "audio_zero_crossing_rate": 0.04133088,
+      "spectral_centroid_hz": -0.0202348,
+      "pitch_hz": -0.11071903,
+      "pitch_confidence": -0.19689438
+    },
+    "frustrated": {
+      "audio_rms": -0.15131193,
+      "audio_peak": -0.13194506,
+      "audio_zero_crossing_rate": 0.06528055,
+      "spectral_centroid_hz": -0.01030456,
+      "pitch_hz": 0.09961835,
+      "pitch_confidence": -0.08911506
+    }
+  }
+}
