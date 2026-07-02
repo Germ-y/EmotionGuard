@@ -897,17 +897,70 @@ h2 { margin: 0 0 8px; font-size: 13px; }
   border: 1px solid #d7e2ff;
   border-radius: 8px;
   background: white;
-  padding: 8px;
+  padding: 10px 11px;
+}
+.report-evidence-card {
+  display: grid;
+  gap: 7px;
+  border-left: 4px solid #94a3b8 !important;
+}
+.report-evidence-card.abuse,
+.report-evidence-card.abuse-raised {
+  border-color: #fecaca;
+  border-left-color: var(--red) !important;
+  background: #fffafa;
+}
+.report-evidence-card.sexual {
+  border-color: #f9c4dc;
+  border-left-color: var(--pink) !important;
+  background: #fff7fb;
+}
+.report-evidence-card.raised {
+  border-color: #fed7aa;
+  border-left-color: #ea580c !important;
+  background: #fff8f1;
+}
+.report-evidence-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
 }
 .report-evidence small {
   color: var(--muted);
   font-size: 10px;
   font-weight: 850;
 }
+.report-evidence b,
+.report-evidence-actions i {
+  width: fit-content;
+  border-radius: 999px;
+  border: 1px solid #dbe4f0;
+  background: #f8fafc;
+  color: #475569;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
 .report-evidence p {
-  margin: 4px 0 0;
+  margin: 0;
   color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
+}
+.report-evidence p span {
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+.report-evidence-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 .empty { color: var(--muted); font-size: 13px; }

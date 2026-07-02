@@ -751,7 +751,7 @@ function persistReportArchive(reports: IncidentReport[]) {
 function reportToText(report: IncidentReport) {
   const evidence = report.evidence.length
     ? report.evidence
-        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${maskVisibleText(item.text)}`)
+        .map((item, index) => `${index + 1}. [${item.timestamp}] ${eventLabel[item.eventType]} / ${pathLabel[item.detectionPath]} / ${maskVisibleText(item.maskedText || item.text)}`)
         .join("\n")
     : "감지된 특이 민원 발화 없음";
 
@@ -833,9 +833,17 @@ function ReportPage({ reports, onNavigateHome }: { reports: IncidentReport[]; on
             <div className="report-evidence expanded">
               {item.evidence.length === 0 && <span>감지된 특이 민원 발화 없음</span>}
               {item.evidence.map((evidence) => (
-                <article key={evidence.id} data-original={maskVisibleText(evidence.text)}>
-                  <small>[{evidence.timestamp}] · {eventLabel[evidence.eventType]} · {pathLabel[evidence.detectionPath]}</small>
-                  <p>원문 문장 비공개 기록됨</p>
+                <article key={evidence.id} className={`report-evidence-card ${evidence.eventType}`}>
+                  <div className="report-evidence-meta">
+                    <small>[{evidence.timestamp}] · {eventLabel[evidence.eventType]} · {pathLabel[evidence.detectionPath]}</small>
+                    <b>{evidence.source === "openai" ? "GPT" : evidence.source === "claude" ? "Claude" : evidence.source === "local" ? "비윤리 표현" : "보조 판단"}</b>
+                  </div>
+                  <p><span>보호 표시</span>{maskVisibleText(evidence.maskedText || evidence.text)}</p>
+                  <div className="report-evidence-actions">
+                    {evidence.policyActions.map((action) => (
+                      <i key={action}>{actionLabel[action]}</i>
+                    ))}
+                  </div>
                 </article>
               ))}
             </div>
