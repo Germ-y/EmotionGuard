@@ -43,11 +43,12 @@
     "korpora_offensive_gender_bias": 90
   },
   "eventTypeCounts": {
-    "abuse": 3200,
-    "normal": 1800
+    "abuse": 3142,
+    "normal": 1800,
+    "sexual": 58
   },
-  "maskableRows": 312,
-  "contextRequiredRows": 2887,
+  "maskableRows": 345,
+  "contextRequiredRows": 2833,
   "notes": [
     "Rows are sampled from external Korpora/kocohub Korean HateSpeech and KOLD datasets.",
     "External offensive/hate labels are mapped to EmotionGuard abuse events for QA.",

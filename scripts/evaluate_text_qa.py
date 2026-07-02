@@ -1,5 +1,7 @@
 import argparse
+import asyncio
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -10,6 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_QA_PATH = ROOT / "qa" / "text" / "emotionguard_text_qa_5000.jsonl"
 DEFAULT_OUTPUT_DIR = ROOT / "qa" / "results"
+BACKEND_DIR = ROOT / "backend"
 
 
 def read_cases(path: Path) -> list[dict[str, Any]]:
@@ -31,6 +34,16 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, An
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+async def analyze_direct(payload: dict[str, Any]) -> dict[str, Any]:
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
+    from app.models import AnalyzeRequest
+    from app.routers.analyze import analyze
+
+    response = await analyze(AnalyzeRequest(**payload))
+    return response.model_dump()
 
 
 def compare(case: dict[str, Any], actual: dict[str, Any]) -> list[str]:
@@ -90,6 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-context", action="store_true", help="Include context/LLM-required cases.")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument("--direct", action="store_true", help="Call backend analysis code in-process instead of HTTP.")
     return parser.parse_args()
 
 
@@ -103,7 +117,7 @@ def main() -> None:
     started = time.strftime("%Y%m%d_%H%M%S")
     for index, case in enumerate(selected, start=1):
         try:
-            actual = post_json(args.url, case["request"], args.timeout)
+            actual = asyncio.run(analyze_direct(case["request"])) if args.direct else post_json(args.url, case["request"], args.timeout)
             failures = compare(case, actual)
             results.append({
                 "id": case["id"],

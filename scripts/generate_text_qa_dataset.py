@@ -10,6 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DICTIONARY_PATH = ROOT / "backend" / "app" / "data" / "dictionaries.json"
+AIHUB_DICTIONARY_PATH = ROOT / "backend" / "app" / "data" / "dictionaries.aihub.json"
 DEFAULT_OUTPUT = ROOT / "qa" / "text" / "emotionguard_text_qa_5000.jsonl"
 DEFAULT_META_OUTPUT = ROOT / "qa" / "text" / "emotionguard_text_qa_5000.meta.json"
 DEFAULT_EXTERNAL_DIR = ROOT / "qa" / "external"
@@ -50,6 +51,15 @@ def ensure_external_files(root: Path, force: bool = False) -> dict[str, Path]:
 def load_dictionaries() -> dict[str, list[str]]:
     with DICTIONARY_PATH.open(encoding="utf-8-sig") as file:
         data = json.load(file)
+    if AIHUB_DICTIONARY_PATH.exists():
+        with AIHUB_DICTIONARY_PATH.open(encoding="utf-8-sig") as file:
+            generated = json.load(file)
+        for key, value in generated.items():
+            if not isinstance(value, list):
+                continue
+            base = data.get(key, [])
+            if isinstance(base, list):
+                data[key] = list(dict.fromkeys([*base, *value]))
     return {key: value for key, value in data.items() if isinstance(value, list)}
 
 
@@ -64,13 +74,8 @@ def mask_text(text: str, dictionaries: dict[str, list[str]]) -> str:
     for token, exception in protected:
         masked = masked.replace(exception, token)
 
-    words = list(dict.fromkeys([*dictionaries["abuse_words"], *dictionaries["sexual_words"]]))
-    words.sort(key=lambda value: len(normalize(value)), reverse=True)
-    for word in words:
-        chars = [re.escape(char) for char in word if not char.isspace()]
-        if not chars:
-            continue
-        masked = re.sub(r"\s*".join(chars), lambda match: "*" * len(match.group(0)), masked, flags=re.IGNORECASE)
+    for word in list(dict.fromkeys([*dictionaries["abuse_words"], *dictionaries["sexual_words"]])):
+        masked = re.sub(re.escape(word), lambda match: "*" * len(match.group(0)), masked, flags=re.IGNORECASE)
 
     for token, exception in protected:
         masked = masked.replace(token, exception)
@@ -80,6 +85,12 @@ def mask_text(text: str, dictionaries: dict[str, list[str]]) -> str:
 def triggered_words(text: str, dictionaries: dict[str, list[str]]) -> list[str]:
     compact = normalize(text)
     words = [*dictionaries["abuse_words"], *dictionaries["sexual_words"]]
+    matches = [word for word in words if normalize(word) and normalize(word) in compact]
+    return list(dict.fromkeys(matches))
+
+
+def triggered_words_for(text: str, words: list[str]) -> list[str]:
+    compact = normalize(text)
     matches = [word for word in words if normalize(word) and normalize(word) in compact]
     return list(dict.fromkeys(matches))
 
@@ -184,7 +195,9 @@ def expected_actions(event_type: str, mode: str, local_hit: bool) -> list[str]:
     actions: list[str] = []
     if mode == "immediate" and event_type == "abuse" and local_hit:
         actions.append("mute")
-    if event_type == "abuse":
+    if mode == "immediate" and event_type == "sexual" and local_hit:
+        actions.append("mute")
+    if event_type in {"abuse", "sexual"}:
         actions.extend(["warn_tts", "escalate", "report"])
     return actions
 
@@ -195,18 +208,21 @@ def build_case(
     row: dict[str, Any],
     dictionaries: dict[str, list[str]],
 ) -> dict[str, Any]:
-    event_type = event_for_bucket(bucket)
-    words = triggered_words(row["text"], dictionaries)
-    masked = mask_text(row["text"], dictionaries) if event_type == "abuse" else row["text"]
+    source_event_type = event_for_bucket(bucket)
+    abuse_words = triggered_words_for(row["text"], dictionaries["abuse_words"])
+    sexual_words = triggered_words_for(row["text"], dictionaries["sexual_words"])
+    words = list(dict.fromkeys([*abuse_words, *sexual_words]))
+    event_type = "sexual" if source_event_type == "abuse" and sexual_words else source_event_type
+    masked = mask_text(row["text"], dictionaries) if event_type in {"abuse", "sexual"} else row["text"]
     local_hit = bool(words)
-    context_required = event_type == "abuse" and not local_hit
+    context_required = source_event_type == "abuse" and not local_hit
     mode = "context_snapshot" if context_required else "immediate"
 
     severity = "none"
     emotion = "normal"
-    if event_type == "abuse":
-        severity = "severe" if bucket in {"korpora_hate", "kold_offensive"} else "mild"
-        emotion = "angry"
+    if event_type in {"abuse", "sexual"}:
+        severity = "any"
+        emotion = "threatening" if event_type == "sexual" else "angry"
 
     raw_labels = row["rawLabels"]
     offensive_span = raw_labels.get("OFF_span") if row["sourceDataset"] == "kold" else ""
@@ -234,14 +250,14 @@ def build_case(
         },
         "expected": {
             "eventType": event_type,
-            "abusive": event_type == "abuse",
-            "sexual": False,
+            "abusive": event_type in {"abuse", "sexual"},
+            "sexual": event_type == "sexual",
             "raised": False,
             "severity": severity,
             "emotion": emotion,
             "sourceHint": "local" if local_hit else ("openai" if context_required else "fallback"),
             "contextRequired": context_required,
-            "requiresReportRedaction": event_type == "abuse",
+            "requiresReportRedaction": event_type in {"abuse", "sexual"},
             "mustMask": masked != row["text"] and "*" in masked,
             "maskedText": masked,
             "triggeredWordsHint": words,
