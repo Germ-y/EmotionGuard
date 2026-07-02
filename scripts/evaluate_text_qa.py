@@ -15,6 +15,18 @@ DEFAULT_OUTPUT_DIR = ROOT / "qa" / "results"
 BACKEND_DIR = ROOT / "backend"
 
 
+def make_progress(items: list[dict[str, Any]], enabled: bool):
+    if not enabled:
+        return items
+    try:
+        from tqdm import tqdm
+
+        return tqdm(items, total=len(items), desc="EmotionGuard QA", unit="case")
+    except Exception:
+        print("tqdm is not installed. Falling back to periodic progress logs.")
+        return items
+
+
 def read_cases(path: Path) -> list[dict[str, Any]]:
     cases = []
     with path.open(encoding="utf-8") as file:
@@ -44,6 +56,58 @@ async def analyze_direct(payload: dict[str, Any]) -> dict[str, Any]:
 
     response = await analyze(AnalyzeRequest(**payload))
     return response.model_dump()
+
+
+async def evaluate_case_direct(case: dict[str, Any]) -> dict[str, Any]:
+    try:
+        actual = await analyze_direct(case["request"])
+        failures = compare(case, actual)
+        return {
+            "id": case["id"],
+            "category": case["category"],
+            "passed": not failures,
+            "failures": failures,
+            "expected": case["expected"],
+            "actual": actual,
+        }
+    except Exception as exc:
+        return {
+            "id": case["id"],
+            "category": case["category"],
+            "passed": False,
+            "failures": [f"request failed: {exc}"],
+            "expected": case["expected"],
+            "actual": None,
+        }
+
+
+async def evaluate_direct_concurrent(cases: list[dict[str, Any]], concurrency: int, progress: bool) -> list[dict[str, Any]]:
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    results: list[dict[str, Any] | None] = [None] * len(cases)
+    completed = 0
+    progress_bar = None
+    if progress:
+        try:
+            from tqdm import tqdm
+
+            progress_bar = tqdm(total=len(cases), desc="EmotionGuard QA", unit="case")
+        except Exception:
+            print("tqdm is not installed. Falling back to periodic progress logs.")
+
+    async def run_one(index: int, case: dict[str, Any]) -> None:
+        nonlocal completed
+        async with semaphore:
+            results[index] = await evaluate_case_direct(case)
+            completed += 1
+            if progress_bar:
+                progress_bar.update(1)
+            elif completed % 100 == 0:
+                print(f"evaluated {completed}/{len(cases)}")
+
+    await asyncio.gather(*(run_one(index, case) for index, case in enumerate(cases)))
+    if progress_bar:
+        progress_bar.close()
+    return [result for result in results if result is not None]
 
 
 def compare(case: dict[str, Any], actual: dict[str, Any]) -> list[str]:
@@ -104,6 +168,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--direct", action="store_true", help="Call backend analysis code in-process instead of HTTP.")
+    parser.add_argument("--concurrency", type=int, default=1, help="Concurrent workers for --direct evaluation.")
+    parser.add_argument("--progress", action="store_true", help="Show a tqdm progress bar when tqdm is installed.")
     return parser.parse_args()
 
 
@@ -115,29 +181,32 @@ def main() -> None:
     results = []
 
     started = time.strftime("%Y%m%d_%H%M%S")
-    for index, case in enumerate(selected, start=1):
-        try:
-            actual = asyncio.run(analyze_direct(case["request"])) if args.direct else post_json(args.url, case["request"], args.timeout)
-            failures = compare(case, actual)
-            results.append({
-                "id": case["id"],
-                "category": case["category"],
-                "passed": not failures,
-                "failures": failures,
-                "expected": case["expected"],
-                "actual": actual,
-            })
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            results.append({
-                "id": case["id"],
-                "category": case["category"],
-                "passed": False,
-                "failures": [f"request failed: {exc}"],
-                "expected": case["expected"],
-                "actual": None,
-            })
-        if index % 100 == 0:
-            print(f"evaluated {index}/{len(selected)}")
+    if args.direct and args.concurrency > 1:
+        results = asyncio.run(evaluate_direct_concurrent(selected, args.concurrency, args.progress))
+    else:
+        for index, case in enumerate(make_progress(selected, args.progress), start=1):
+            try:
+                actual = asyncio.run(analyze_direct(case["request"])) if args.direct else post_json(args.url, case["request"], args.timeout)
+                failures = compare(case, actual)
+                results.append({
+                    "id": case["id"],
+                    "category": case["category"],
+                    "passed": not failures,
+                    "failures": failures,
+                    "expected": case["expected"],
+                    "actual": actual,
+                })
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                results.append({
+                    "id": case["id"],
+                    "category": case["category"],
+                    "passed": False,
+                    "failures": [f"request failed: {exc}"],
+                    "expected": case["expected"],
+                    "actual": None,
+                })
+            if not args.progress and index % 100 == 0:
+                print(f"evaluated {index}/{len(selected)}")
 
     summary = {
         "qa": str(args.qa),
