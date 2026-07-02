@@ -77,6 +77,7 @@ type PitchProtection = {
   active: boolean;
   levelTriggered: boolean;
   pitchTriggered: boolean;
+  modulationTriggered: boolean;
   offset: number;
 };
 
@@ -265,11 +266,9 @@ function pitchProtectionForShout(
 ): PitchProtection {
   const levelTriggered = level >= threshold;
   const pitchTriggered = Boolean(pitchHz && pitchConfidence >= 0.28 && pitchHz >= pitchThreshold);
-  if (!levelTriggered && !pitchTriggered) {
-    return { active: false, levelTriggered, pitchTriggered, offset: 0 };
-  }
-  if (!pitchTriggered) {
-    return { active: true, levelTriggered, pitchTriggered, offset: 0 };
+  const modulationTriggered = levelTriggered || pitchTriggered;
+  if (!modulationTriggered) {
+    return { active: false, levelTriggered, pitchTriggered, modulationTriggered, offset: 0 };
   }
 
   const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
@@ -284,6 +283,7 @@ function pitchProtectionForShout(
     active: true,
     levelTriggered,
     pitchTriggered,
+    modulationTriggered,
     offset: clamp(offset, -0.95, -0.45),
   };
 }
@@ -1456,10 +1456,10 @@ export default function App() {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
         if (!voiceActivity) setEmotionPrediction(null);
-        const nextStatus = pitchProtection.pitchTriggered
-          ? "피치 기준 초과 변조"
-          : pitchProtection.levelTriggered
-            ? "고성 구간 볼륨 완화"
+        const nextStatus = pitchProtection.modulationTriggered
+          ? pitchProtection.pitchTriggered
+            ? "피치 기준 초과 음성 변조"
+            : "고성 기준 초과 음성 변조"
           : muted
             ? "욕설 단어 삐 처리"
             : voiceActivity
@@ -1473,13 +1473,13 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = pitchProtection.pitchTriggered ? 1 : offset < 0 ? 0.85 : 0;
+        const processedMix = pitchProtection.modulationTriggered ? 1 : offset < 0 ? 0.85 : 0;
         current.dryGain.gain.setTargetAtTime(1 - processedMix, current.ctx.currentTime, 0.04);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
       }
       if (current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        current.modulationGain.gain.setTargetAtTime(pitchProtection.pitchTriggered ? 0.58 : 1, current.ctx.currentTime, 0.025);
-        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.pitchTriggered ? 0.48 : 0, current.ctx.currentTime, 0.025);
+        current.modulationGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.58 : 1, current.ctx.currentTime, 0.025);
+        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.48 : 0, current.ctx.currentTime, 0.025);
       }
       if (current.loudnessGain && current.ctx) {
         current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
@@ -1494,8 +1494,8 @@ export default function App() {
           markDemoPhase("mask");
           setInterimText(pitchProtection.pitchTriggered
             ? "피치 기준 초과 감지 - 출력 커서에서 음성을 변조합니다."
-            : "RMS 고성 감지 - 출력 커서에서 볼륨을 낮춰 전달합니다.");
-          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 변조" : "고성 구간 볼륨 완화");
+            : "RMS 고성 감지 - 출력 커서에서 음성을 변조합니다.");
+          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 음성 변조" : "고성 기준 초과 음성 변조");
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
