@@ -216,7 +216,7 @@ def generate_visual(data: dict[str, Any], output_path: Path) -> None:
 
 
 def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
-    image = Image.new("RGB", (1510, 980), "#ffffff")
+    image = Image.new("RGB", (1510, 860), "#ffffff")
     draw = ImageDraw.Draw(image)
 
     summary = data["summary"]
@@ -229,17 +229,11 @@ def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
     non_fallback = total - sources.get("fallback", 0)
     path_rate = non_fallback / max(1, total)
 
-    normal_categories = [metrics[name] for name in ("kold_none", "korpora_none") if name in metrics]
-    normal_passed = sum(item["passed"] for item in normal_categories)
-    normal_total = sum(item["total"] for item in normal_categories)
-    normal_rate = normal_passed / max(1, normal_total)
-
     text(draw, (70, 58), "EmotionGuard QA 주요 성과", 44, INK, True)
     text(draw, (70, 112), "발표용 요약: 안정적으로 검증된 지표 중심", 24, MUTED)
 
     main_items = [
         ("전체 QA 통과율", "기대 결과와 실제 판단이 일치한 비율", pass_rate, f"{summary['passed']:,}/{total:,}"),
-        ("정상 문장 오탐 방지율", "정상 문장을 위험 발화로 잘못 잡지 않은 비율", normal_rate, f"{normal_passed:,}/{normal_total:,}"),
         ("분석 엔진 처리율", "예외 경로 없이 GPT·사전 판단으로 처리된 비율", path_rate, f"{non_fallback:,}/{total:,}"),
     ]
 
@@ -253,8 +247,8 @@ def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
         text(draw, (x + w + 32, yy - 6), pct(rate), 28, BLUE, True)
         text(draw, (x + w + 160, yy - 2), count_text, 22, MUTED)
 
-    text(draw, (70, 590), "대표 우수 카테고리", 30, INK, True)
-    text(draw, (70, 628), "정상 방어 및 주요 문맥 판단에서 높은 통과율을 보인 항목", 21, MUTED)
+    text(draw, (70, 480), "대표 우수 카테고리", 30, INK, True)
+    text(draw, (70, 518), "정상 방어 및 주요 문맥 판단에서 높은 통과율을 보인 항목", 21, MUTED)
 
     preferred = [
         ("정상 발화 1", "kold_none"),
@@ -265,7 +259,7 @@ def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
     ]
     label_x = 70
     chart_x = 430
-    chart_y = 682
+    chart_y = 572
     chart_w = 700
     row_h = 48
     for index, (label, category) in enumerate(preferred):
@@ -278,8 +272,6 @@ def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
         bar(draw, chart_x, yy + 4, chart_w, 20, rate, BLUE)
         text(draw, (chart_x + chart_w + 26, yy - 3), pct(rate), 22, BLUE, True)
         text(draw, (chart_x + chart_w + 138, yy - 2), f"{values['passed']:,}/{values['total']:,}", 19, MUTED)
-
-    text(draw, (70, 940), "요약: 전체 QA 통과율 82.28%, 정상 문장 오탐 방지는 98% 수준으로 확인", 23, MUTED)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
 
