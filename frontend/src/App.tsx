@@ -264,8 +264,7 @@ function pitchProtectionForShout(
   strength: number,
 ): PitchProtection {
   const levelTriggered = level >= threshold;
-  const enoughEnergyForPitch = level >= Math.max(18, threshold * 0.58);
-  const pitchTriggered = Boolean(pitchHz && pitchConfidence >= 0.28 && pitchHz >= pitchThreshold && enoughEnergyForPitch);
+  const pitchTriggered = Boolean(pitchHz && pitchConfidence >= 0.28 && pitchHz >= pitchThreshold);
   if (!levelTriggered && !pitchTriggered) {
     return { active: false, levelTriggered, pitchTriggered, offset: 0 };
   }
@@ -275,7 +274,7 @@ function pitchProtectionForShout(
 
   const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
   const pitchOver = pitchHz ? clamp((pitchHz - pitchThreshold) / 150, 0, 1) : 0;
-  const triggerStrength = Math.max(levelOver, pitchOver);
+  const triggerStrength = Math.max(0.35, levelOver, pitchOver);
   const ratio = clamp(strength / 100, 0, 1);
   const baseDrop = 0.18;
   const spanDrop = 0.3;
@@ -1433,7 +1432,7 @@ export default function App() {
         setAudioFeatures(nextFeatures);
         if (!voiceActivity) setEmotionPrediction(null);
         const nextStatus = pitchProtection.pitchTriggered
-          ? "고피치 고성 다운피치"
+          ? "피치 기준 초과 다운피치"
           : pitchProtection.levelTriggered
             ? "고성 구간 볼륨 완화"
           : muted
@@ -1465,9 +1464,9 @@ export default function App() {
           markDemoPhase("detect");
           markDemoPhase("mask");
           setInterimText(pitchProtection.pitchTriggered
-            ? "고피치 고성 감지 - 출력 커서에서 음정을 확 낮춰 전달합니다."
+            ? "피치 기준 초과 감지 - 출력 커서에서 음정을 확 낮춰 전달합니다."
             : "RMS 고성 감지 - 출력 커서에서 볼륨을 낮춰 전달합니다.");
-          setStatus(pitchProtection.pitchTriggered ? "고피치 고성 다운피치" : "고성 구간 볼륨 완화");
+          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 다운피치" : "고성 구간 볼륨 완화");
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
