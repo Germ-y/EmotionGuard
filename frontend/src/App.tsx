@@ -1639,20 +1639,22 @@ export default function App() {
 
       current.jungle.setPitchOffset(outputPitchOffset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = voiceChangeActive ? 0.82 : pitchOnlySoftening ? pitchSoftening.mix : 0;
+        const effectAt = current.ctx.currentTime + CFG.outputDelay;
+        const processedMix = voiceChangeActive ? 1 : pitchOnlySoftening ? pitchSoftening.mix : 0;
         const dryMix = voiceChangeActive ? 0 : 1 - processedMix;
-        current.dryGain.gain.setTargetAtTime(dryMix, current.ctx.currentTime, 0.025);
-        current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
+        current.dryGain.gain.setTargetAtTime(dryMix, effectAt, 0.012);
+        current.processedGain.gain.setTargetAtTime(processedMix, effectAt, 0.012);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
         const strength = clamp(attenuationStrengthRef.current / 100, 0, 1);
-        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.42 : 0, current.ctx.currentTime, 0.02);
-        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.38 : 1, current.ctx.currentTime, 0.02);
-        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.3 + strength * 0.24 : 0, current.ctx.currentTime, 0.02);
+        const effectAt = current.ctx.currentTime + CFG.outputDelay;
+        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.52 : 0, effectAt, 0.012);
+        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.34 : 1, effectAt, 0.012);
+        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.34 + strength * 0.26 : 0, effectAt, 0.012);
       }
       commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
-        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
+        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime + CFG.outputDelay, 0.035);
       }
 
       if (!announcingRef.current && pitchProtection.active) {
