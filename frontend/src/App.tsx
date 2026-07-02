@@ -2417,6 +2417,12 @@ export default function App() {
         startSafely(CFG.recognitionRestartMs);
         return;
       }
+      if (event.error === "network") {
+        browserDictationRef.current = false;
+        setError("");
+        setStatus("브라우저 받아쓰기 연결 실패 - OpenAI 청크 STT로 계속 수신");
+        return;
+      }
       setError(`음성 인식 오류: ${event.error}`);
       startSafely(CFG.recognitionRestartMs * 2);
     };
