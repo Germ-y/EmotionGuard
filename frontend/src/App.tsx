@@ -181,6 +181,7 @@ function timelineDetailFor(log: LogEntry) {
 const REPORT_ARCHIVE_KEY = "emotionguard.reports.v1";
 const REPORT_ARCHIVE_LIMIT = 80;
 const MONITOR_GAIN = 0.5;
+const SHOW_DEMO_REMOTE = false;
 
 const demoAudioSpecs: Record<DemoAudioKey, DemoAudioSpec> = {
   "parking-normal": {
@@ -2832,12 +2833,14 @@ export default function App() {
           </section>
         </aside>
       </section>
-      <aside className="demo-remote" aria-label="데모 리모콘">
-        <strong>DEMO</strong>
-        <span>{active ? demoStep : "상담 시작 후 데모를 실행합니다."}</span>
-        <button disabled={!active} onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
-        <button disabled={!active} onClick={() => void runDemo("sexual")}>성희롱 경고</button>
-      </aside>
+      {SHOW_DEMO_REMOTE && (
+        <aside className="demo-remote" aria-label="데모 리모콘">
+          <strong>DEMO</strong>
+          <span>{active ? demoStep : "상담 시작 후 데모를 실행합니다."}</span>
+          <button disabled={!active} onClick={() => void runDemo("abuse")}>욕설 삐 처리</button>
+          <button disabled={!active} onClick={() => void runDemo("sexual")}>성희롱 경고</button>
+        </aside>
+      )}
     </main>
   );
 }
