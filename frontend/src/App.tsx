@@ -73,6 +73,13 @@ type AutoThresholdBaseline = {
   lastUpdateMs: number;
 };
 
+type PitchProtection = {
+  active: boolean;
+  levelTriggered: boolean;
+  pitchTriggered: boolean;
+  offset: number;
+};
+
 type EscalationState = {
   abuse: number;
   sexual: number;
@@ -248,11 +255,38 @@ function formatSessionTimestamp(startedAt: Date | null, fallbackSeconds: number)
   return formatDuration(seconds);
 }
 
-function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | "female") {
-  if (level < threshold) return 0;
-  const over = (level - threshold) / (100 - threshold);
-  const curve = gender === "female" ? { base: 0.07, span: 0.1 } : { base: 0.1, span: 0.15 };
-  return -(curve.base + curve.span * Math.min(1, over));
+function pitchProtectionForShout(
+  level: number,
+  threshold: number,
+  pitchHz: number | undefined,
+  pitchConfidence: number,
+  pitchThreshold: number,
+  strength: number,
+): PitchProtection {
+  const levelTriggered = level >= threshold;
+  const enoughEnergyForPitch = level >= Math.max(18, threshold * 0.58);
+  const pitchTriggered = Boolean(pitchHz && pitchConfidence >= 0.28 && pitchHz >= pitchThreshold && enoughEnergyForPitch);
+  if (!levelTriggered && !pitchTriggered) {
+    return { active: false, levelTriggered, pitchTriggered, offset: 0 };
+  }
+  if (!pitchTriggered) {
+    return { active: true, levelTriggered, pitchTriggered, offset: 0 };
+  }
+
+  const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
+  const pitchOver = pitchHz ? clamp((pitchHz - pitchThreshold) / 150, 0, 1) : 0;
+  const triggerStrength = Math.max(levelOver, pitchOver);
+  const ratio = clamp(strength / 100, 0, 1);
+  const baseDrop = 0.18;
+  const spanDrop = 0.3;
+  const offset = -(baseDrop + spanDrop * triggerStrength) * (0.75 + ratio * 0.55);
+
+  return {
+    active: true,
+    levelTriggered,
+    pitchTriggered,
+    offset: clamp(offset, -0.48, -0.1),
+  };
 }
 
 function loudnessGainForLevel(level: number, threshold: number, strength: number) {
@@ -977,7 +1011,7 @@ export default function App() {
   const [autoThreshold, setAutoThreshold] = useState(42);
   const [autoThresholdEnabled, setAutoThresholdEnabled] = useState(true);
   const [attenuationStrength, setAttenuationStrength] = useState(65);
-  const [gender, setGender] = useState<"male" | "female">("male");
+  const [pitchThreshold, setPitchThreshold] = useState(240);
   const [monitorEnabled, setMonitorEnabled] = useState(true);
   const [, setInterimText] = useState("상담을 시작하면 실시간 STT 인터림과 보호 상태가 표시됩니다.");
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -1022,7 +1056,7 @@ export default function App() {
   const autoThresholdEnabledRef = useRef(true);
   const autoBaselineRef = useRef<AutoThresholdBaseline>(createAutoThresholdBaseline());
   const attenuationStrengthRef = useRef(65);
-  const genderRef = useRef<"male" | "female">("male");
+  const pitchThresholdRef = useRef(240);
   const browserDictationRef = useRef(false);
   const lastBrowserDictationRef = useRef<{ text: string; at: number } | null>(null);
   const demoAudioRef = useRef<{
@@ -1270,8 +1304,8 @@ export default function App() {
   }, [attenuationStrength]);
 
   useEffect(() => {
-    genderRef.current = gender;
-  }, [gender]);
+    pitchThresholdRef.current = pitchThreshold;
+  }, [pitchThreshold]);
 
   useEffect(() => {
     const { ctx, outGain } = audioRef.current;
@@ -1370,7 +1404,15 @@ export default function App() {
       }
 
       const activeThreshold = autoThresholdEnabledRef.current ? autoThresholdRef.current : thresholdRef.current;
-      const offset = pitchOffsetForLevel(nextLevel, activeThreshold, genderRef.current);
+      const pitchProtection = pitchProtectionForShout(
+        nextLevel,
+        activeThreshold,
+        pitch.pitchHz,
+        pitch.confidence,
+        pitchThresholdRef.current,
+        attenuationStrengthRef.current,
+      );
+      const offset = pitchProtection.offset;
       const nextFeatures: AudioFeatures = {
         rms: rounded(rms, 4),
         rmsPercent: rounded(nextLevel, 1),
@@ -1390,8 +1432,10 @@ export default function App() {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
         if (!voiceActivity) setEmotionPrediction(null);
-        const nextStatus = offset < 0
-          ? "고성 구간 피치/볼륨 완화"
+        const nextStatus = pitchProtection.pitchTriggered
+          ? "고피치 고성 다운피치"
+          : pitchProtection.levelTriggered
+            ? "고성 구간 볼륨 완화"
           : muted
             ? "욕설 단어 삐 처리"
             : voiceActivity
@@ -1413,15 +1457,17 @@ export default function App() {
         current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
       }
 
-      if (!announcingRef.current && nextLevel >= activeThreshold) {
+      if (!announcingRef.current && pitchProtection.active) {
         current.raisedSustainMs += dt;
         if (current.raisedSustainMs >= CFG.raisedSustainMs && !current.raisedLatched) {
           current.raisedLatched = true;
           current.lastRaisedTs = Date.now();
           markDemoPhase("detect");
           markDemoPhase("mask");
-          setInterimText("RMS 고성 분석 감지 - 출력 커서에서 음정을 낮춰 전달합니다.");
-          setStatus("고성 구간 피치/볼륨 완화");
+          setInterimText(pitchProtection.pitchTriggered
+            ? "고피치 고성 감지 - 출력 커서에서 음정을 확 낮춰 전달합니다."
+            : "RMS 고성 감지 - 출력 커서에서 볼륨을 낮춰 전달합니다.");
+          setStatus(pitchProtection.pitchTriggered ? "고피치 고성 다운피치" : "고성 구간 볼륨 완화");
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
@@ -2748,13 +2794,11 @@ export default function App() {
               <input type="range" min={0} max={100} value={attenuationStrength} onChange={(event) => setAttenuationStrength(Number(event.target.value))} />
               <b>{attenuationStrength}%</b>
             </label>
-            <div className="voice-control">
-              <span>음성 보정</span>
-              <div className="segmented">
-                <button className={gender === "male" ? "selected" : ""} onClick={() => setGender("male")}>남성</button>
-                <button className={gender === "female" ? "selected" : ""} onClick={() => setGender("female")}>여성</button>
-              </div>
-            </div>
+            <label className="threshold-control pitch-control">
+              <span>피치 기준</span>
+              <input type="range" min={160} max={340} step={5} value={pitchThreshold} onChange={(event) => setPitchThreshold(Number(event.target.value))} />
+              <b>{pitchThreshold}Hz</b>
+            </label>
             <div className="monitor-control">
               <span>청취 모니터</span>
               <button className={monitorEnabled ? "selected" : ""} onClick={() => setMonitorEnabled((prev) => !prev)}>

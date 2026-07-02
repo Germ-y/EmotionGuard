@@ -572,7 +572,6 @@ button:hover { transform: translateY(-1px); }
 }
 .guard-state,
 .threshold-control,
-.voice-control,
 .monitor-control {
   min-height: 40px;
   display: flex;
@@ -613,6 +612,9 @@ button:hover { transform: translateY(-1px); }
 .attenuation-control input {
   accent-color: #4f7dff;
 }
+.pitch-control input {
+  accent-color: #6d5dfc;
+}
 .threshold-control input {
   min-width: 120px;
   flex: 1;
@@ -643,29 +645,13 @@ button:hover { transform: translateY(-1px); }
   background: #eef2ff;
   color: var(--blue);
 }
-.voice-control,
 .monitor-control {
   justify-content: flex-end;
 }
+.pitch-control b {
+  min-width: 54px;
+}
 input[type="range"] { accent-color: var(--blue); }
-.segmented {
-  display: inline-flex;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  overflow: hidden;
-  background: white;
-}
-.segmented button {
-  border-radius: 0;
-  background: white;
-  color: var(--muted);
-  padding: 7px 11px;
-  font-size: 12px;
-}
-.segmented .selected {
-  background: var(--blue);
-  color: white;
-}
 .monitor-control button {
   min-width: 62px;
   border-color: var(--line-strong);
@@ -1010,7 +996,7 @@ h2 { margin: 0 0 8px; font-size: 13px; }
   .acoustic-panel div {
     min-width: 116px;
   }
-  .voice-control { justify-content: flex-start; }
+  .monitor-control { justify-content: flex-start; }
   .demo-remote {
     right: 12px;
     bottom: 12px;
