@@ -2722,7 +2722,16 @@ export default function App() {
               <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
             </div>
             <div className={`threshold-control ${autoThresholdEnabled ? "auto" : ""}`}>
-              <span>고성 기준</span>
+              <div className="threshold-heading">
+                <span>고성 기준</span>
+                <button
+                  type="button"
+                  className={`mode-chip ${autoThresholdEnabled ? "selected" : ""}`}
+                  onClick={toggleAutoThresholdMode}
+                >
+                  {autoThresholdEnabled ? "자동" : "수동"}
+                </button>
+              </div>
               <input
                 type="range"
                 min={20}
@@ -2732,13 +2741,6 @@ export default function App() {
                 onChange={(event) => setThreshold(Number(event.target.value))}
               />
               <b>{effectiveThreshold}%</b>
-              <button
-                type="button"
-                className={`mode-chip ${autoThresholdEnabled ? "selected" : ""}`}
-                onClick={toggleAutoThresholdMode}
-              >
-                {autoThresholdEnabled ? "자동" : "수동"}
-              </button>
             </div>
             <label className="threshold-control attenuation-control">
               <span>완화 강도</span>

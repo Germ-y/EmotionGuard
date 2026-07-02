@@ -600,6 +600,16 @@ button:hover { transform: translateY(-1px); }
 .threshold-control {
   min-width: 0;
 }
+.threshold-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 118px;
+  white-space: nowrap;
+}
+.threshold-heading span {
+  line-height: 1;
+}
 .attenuation-control input {
   accent-color: #4f7dff;
 }
@@ -622,9 +632,10 @@ button:hover { transform: translateY(-1px); }
   border: 1px solid var(--line-strong);
   background: white;
   color: var(--muted);
-  padding: 6px 9px;
-  font-size: 11px;
+  padding: 4px 8px;
+  font-size: 10px;
   font-weight: 900;
+  line-height: 1;
   white-space: nowrap;
 }
 .mode-chip.selected {
