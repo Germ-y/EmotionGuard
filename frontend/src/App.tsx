@@ -1479,14 +1479,14 @@ export default function App() {
     processedGain.gain.value = 0;
     loudnessGain.gain.value = 1;
     voiceChangeFilter.type = "bandpass";
-    voiceChangeFilter.frequency.value = 760;
-    voiceChangeFilter.Q.value = 8.5;
+    voiceChangeFilter.frequency.value = 620;
+    voiceChangeFilter.Q.value = 5.2;
     voiceChangeShaper.curve = createVoiceChangeCurve();
     voiceChangeShaper.oversample = "4x";
     voiceChangeGain.gain.value = 0;
     modulationGain.gain.value = 1;
-    modulationCarrier.type = "sawtooth";
-    modulationCarrier.frequency.value = 96;
+    modulationCarrier.type = "square";
+    modulationCarrier.frequency.value = 82;
     modulationCarrierGain.gain.value = 0;
     outGain.gain.value = monitorOn ? MONITOR_GAIN : 0;
 
@@ -1541,7 +1541,7 @@ export default function App() {
       current.analyser.getByteFrequencyData(frequencyData);
       const rms = Math.sqrt(buffer.reduce((sum, item) => sum + item * item, 0) / buffer.length);
       const rawLevel = Math.min(100, rms * CFG.meterGain);
-      const nextLevel = levelRef.current + (rawLevel - levelRef.current) * 0.35;
+      const nextLevel = levelRef.current + (rawLevel - levelRef.current) * 0.65;
       levelRef.current = nextLevel;
       const t = performance.now();
       const dt = t - lastTs;
@@ -1639,16 +1639,16 @@ export default function App() {
 
       current.jungle.setPitchOffset(outputPitchOffset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = pitchOnlySoftening ? pitchSoftening.mix : 0;
-        const dryMix = voiceChangeActive ? 0.03 : 1 - processedMix;
+        const processedMix = voiceChangeActive ? 0.82 : pitchOnlySoftening ? pitchSoftening.mix : 0;
+        const dryMix = voiceChangeActive ? 0 : 1 - processedMix;
         current.dryGain.gain.setTargetAtTime(dryMix, current.ctx.currentTime, 0.025);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
         const strength = clamp(attenuationStrengthRef.current / 100, 0, 1);
-        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.95 : 0, current.ctx.currentTime, 0.02);
-        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.58 : 1, current.ctx.currentTime, 0.02);
-        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.18 + strength * 0.22 : 0, current.ctx.currentTime, 0.02);
+        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 0.42 : 0, current.ctx.currentTime, 0.02);
+        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.38 : 1, current.ctx.currentTime, 0.02);
+        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.3 + strength * 0.24 : 0, current.ctx.currentTime, 0.02);
       }
       commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
