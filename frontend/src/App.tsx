@@ -155,12 +155,6 @@ const emotionLabel: Record<EmotionPrediction["label"], string> = {
   threatening: "위협",
 };
 
-const emotionSourceLabel: Record<EmotionPrediction["source"], string> = {
-  skt_centroid_model: "SKT 모델",
-  skt_acoustic_baseline: "SKT 기준",
-  fallback: "기본 기준",
-};
-
 const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   local: "비윤리 표현 사전",
   openai: "GPT API",
@@ -2619,7 +2613,7 @@ export default function App() {
           </div>
           <section className={`acoustic-panel ${audioFeatures.voiceActivity ? "active" : ""}`}>
             <div><span>입력 상태</span><strong>{audioFeatures.voiceActivity ? "발화 감지" : active ? "무음 대기" : "마이크 대기"}</strong></div>
-            <div><span>Emotion</span><strong>{emotionPredictionValue(emotionPrediction, audioFeatures.voiceActivity)}</strong></div>
+            <div><span>감정</span><strong>{emotionPredictionValue(emotionPrediction, audioFeatures.voiceActivity)}</strong></div>
             <div><span>Pitch</span><strong>{featureValue(audioFeatures.pitchHz, "Hz", audioFeatures.voiceActivity)}</strong></div>
             <div><span>Peak</span><strong>{featureValue(audioFeatures.peak, "", audioFeatures.voiceActivity)}</strong></div>
             <div><span>ZCR</span><strong>{featureValue(audioFeatures.zeroCrossingRate, "", audioFeatures.voiceActivity)}</strong></div>
@@ -2669,8 +2663,8 @@ export default function App() {
               <strong>{feedbackContext.acousticTrend === "escalating" ? "상승" : feedbackContext.acousticTrend === "quiet" ? "무음" : "안정"}</strong>
             </div>
             <div>
-              <span>감정 모델</span>
-              <strong>{emotionPrediction ? `${emotionLabel[emotionPrediction.label]} · ${emotionSourceLabel[emotionPrediction.source]}` : "대기"}</strong>
+              <span>감정</span>
+              <strong>{emotionPrediction ? emotionLabel[emotionPrediction.label] : "대기"}</strong>
             </div>
           </section>
           <section className="report-link-card">
