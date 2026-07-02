@@ -37,6 +37,39 @@ def read_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def read_partial_results(path: Path | None) -> tuple[list[dict[str, Any]], set[str]]:
+    if path is None or not path.exists():
+        return [], set()
+
+    results = []
+    completed_ids = set()
+    with path.open(encoding="utf-8") as file:
+        for line in file:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            result_id = str(result.get("id", ""))
+            if not result_id or result_id in completed_ids:
+                continue
+            results.append(result)
+            completed_ids.add(result_id)
+    return results, completed_ids
+
+
+def append_partial_result(path: Path | None, result: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(result, ensure_ascii=False))
+        file.write("\n")
+        file.flush()
+
+
 def post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -81,8 +114,14 @@ async def evaluate_case_direct(case: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def evaluate_direct_concurrent(cases: list[dict[str, Any]], concurrency: int, progress: bool) -> list[dict[str, Any]]:
+async def evaluate_direct_concurrent(
+    cases: list[dict[str, Any]],
+    concurrency: int,
+    progress: bool,
+    partial_path: Path | None,
+) -> list[dict[str, Any]]:
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    write_lock = asyncio.Lock()
     results: list[dict[str, Any] | None] = [None] * len(cases)
     completed = 0
     progress_bar = None
@@ -97,7 +136,10 @@ async def evaluate_direct_concurrent(cases: list[dict[str, Any]], concurrency: i
     async def run_one(index: int, case: dict[str, Any]) -> None:
         nonlocal completed
         async with semaphore:
-            results[index] = await evaluate_case_direct(case)
+            result = await evaluate_case_direct(case)
+            results[index] = result
+            async with write_lock:
+                append_partial_result(partial_path, result)
             completed += 1
             if progress_bar:
                 progress_bar.update(1)
@@ -170,6 +212,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--direct", action="store_true", help="Call backend analysis code in-process instead of HTTP.")
     parser.add_argument("--concurrency", type=int, default=1, help="Concurrent workers for --direct evaluation.")
     parser.add_argument("--progress", action="store_true", help="Show a tqdm progress bar when tqdm is installed.")
+    parser.add_argument("--partial-output", default="", help="JSONL path for incremental partial results.")
+    parser.add_argument("--resume-from", default="", help="Resume from a previous .partial.jsonl result file.")
     return parser.parse_args()
 
 
@@ -177,41 +221,66 @@ def main() -> None:
     args = parse_args()
     cases = read_cases(Path(args.qa))
     limit = args.limit if args.limit > 0 else None
-    selected = select_cases(cases, limit, args.include_context)
-    results = []
-
     started = time.strftime("%Y%m%d_%H%M%S")
-    if args.direct and args.concurrency > 1:
-        results = asyncio.run(evaluate_direct_concurrent(selected, args.concurrency, args.progress))
-    else:
-        for index, case in enumerate(make_progress(selected, args.progress), start=1):
-            try:
-                actual = asyncio.run(analyze_direct(case["request"])) if args.direct else post_json(args.url, case["request"], args.timeout)
-                failures = compare(case, actual)
-                results.append({
-                    "id": case["id"],
-                    "category": case["category"],
-                    "passed": not failures,
-                    "failures": failures,
-                    "expected": case["expected"],
-                    "actual": actual,
-                })
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-                results.append({
-                    "id": case["id"],
-                    "category": case["category"],
-                    "passed": False,
-                    "failures": [f"request failed: {exc}"],
-                    "expected": case["expected"],
-                    "actual": None,
-                })
-            if not args.progress and index % 100 == 0:
-                print(f"evaluated {index}/{len(selected)}")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    resume_path = Path(args.resume_from) if args.resume_from else None
+    partial_path = (
+        Path(args.partial_output)
+        if args.partial_output
+        else resume_path
+        if resume_path
+        else output_dir / f"text_eval_{started}.partial.jsonl"
+    )
+
+    selected_all = select_cases(cases, limit, args.include_context)
+    resumed_results, completed_ids = read_partial_results(resume_path)
+    selected = [case for case in selected_all if case["id"] not in completed_ids]
+    results = [*resumed_results]
+
+    print(f"selected total: {len(selected_all)}")
+    if resumed_results:
+        print(f"resumed: {len(resumed_results)} completed, remaining: {len(selected)}")
+    print(f"partial output: {partial_path}")
+
+    try:
+        if args.direct and args.concurrency > 1:
+            results.extend(asyncio.run(evaluate_direct_concurrent(selected, args.concurrency, args.progress, partial_path)))
+        else:
+            for index, case in enumerate(make_progress(selected, args.progress), start=1):
+                try:
+                    actual = asyncio.run(analyze_direct(case["request"])) if args.direct else post_json(args.url, case["request"], args.timeout)
+                    failures = compare(case, actual)
+                    result = {
+                        "id": case["id"],
+                        "category": case["category"],
+                        "passed": not failures,
+                        "failures": failures,
+                        "expected": case["expected"],
+                        "actual": actual,
+                    }
+                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                    result = {
+                        "id": case["id"],
+                        "category": case["category"],
+                        "passed": False,
+                        "failures": [f"request failed: {exc}"],
+                        "expected": case["expected"],
+                        "actual": None,
+                    }
+                results.append(result)
+                append_partial_result(partial_path, result)
+                if not args.progress and index % 100 == 0:
+                    print(f"evaluated {index}/{len(selected)}")
+    except KeyboardInterrupt:
+        print(f"\nInterrupted. Partial results are saved at: {partial_path}")
+        raise SystemExit(130)
 
     summary = {
         "qa": str(args.qa),
         "url": args.url,
-        "selected": len(selected),
+        "selected": len(selected_all),
+        "completed": len(results),
         "includeContext": args.include_context,
         "passed": sum(1 for result in results if result["passed"]),
         "failed": sum(1 for result in results if not result["passed"]),
@@ -229,11 +298,12 @@ def main() -> None:
         ][:100],
     }
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"text_eval_{started}.json"
-    output_path.write_text(json.dumps({"summary": summary, "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({**summary, "output": str(output_path)}, ensure_ascii=False, indent=2))
+    output_path.write_text(
+        json.dumps({"summary": {**summary, "partialOutput": str(partial_path)}, "results": results}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(json.dumps({**summary, "output": str(output_path), "partialOutput": str(partial_path)}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
