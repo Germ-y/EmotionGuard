@@ -493,6 +493,15 @@ button:hover { transform: translateY(-1px); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.conversation-row.raised-utterance {
+  border-color: #fed7aa;
+  border-left-color: var(--amber);
+  background: #fffbf5;
+}
+.conversation-row.raised-utterance b {
+  background: #fff7ed;
+  color: #9a5a11;
+}
 .conversation-row.system {
   border-color: #bfd1ff;
   border-left-color: var(--blue);

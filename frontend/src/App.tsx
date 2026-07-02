@@ -22,6 +22,7 @@ type LogEntry = AnalyzeResponse & {
   time: string;
   timestamp: string;
   loggedAtMs?: number;
+  audioOnly?: boolean;
 };
 
 type SpeechTiming = {
@@ -56,6 +57,7 @@ type ConversationEntry = {
   detail: string;
   tone: "normal" | "risk" | "system";
   eventType?: EventType;
+  rowClass?: string;
 };
 
 type LatestDetectionView = {
@@ -750,7 +752,8 @@ function logTextScore(log: LogEntry) {
     (log.detectionPath === "immediate" ? 1000 : 0) +
     (log.eventType !== "normal" ? 150 : 0) +
     Math.min(length, 180) -
-    runawayPenalty
+    runawayPenalty -
+    (log.audioOnly ? 500 : 0)
   );
 }
 
@@ -789,6 +792,10 @@ function bestLogJudgement(logs: LogEntry[]) {
     })[0];
 }
 
+function isRaisedAudioOnlyResult(result: AnalyzeResponse) {
+  return result.eventType === "raised" && result.source === "fallback" && result.categories.includes("raised_voice");
+}
+
 function shouldMergeLogCandidate(candidate: LogEntry, entry: LogEntry) {
   const compatibleEvent =
     candidate.eventType === entry.eventType ||
@@ -796,13 +803,25 @@ function shouldMergeLogCandidate(candidate: LogEntry, entry: LogEntry) {
     entry.eventType === "normal";
   if (!compatibleEvent) return false;
 
+  const candidateLoggedAt = candidate.loggedAtMs ?? 0;
+  const entryLoggedAt = entry.loggedAtMs ?? Date.now();
+  const sameShortWindow = candidateLoggedAt > 0 && Math.abs(entryLoggedAt - candidateLoggedAt) <= 3200;
+  const sameRaisedAudioWindow =
+    candidateLoggedAt > 0 &&
+    Math.abs(entryLoggedAt - candidateLoggedAt) <= Math.max(3200, CFG.liveChunkVoiceWindowMs + 1000);
+  if (
+    sameRaisedAudioWindow &&
+    candidate.eventType === "raised" &&
+    entry.eventType === "raised" &&
+    candidate.audioOnly !== entry.audioOnly
+  ) {
+    return true;
+  }
+
   if (transcriptsLookRelated(candidate.maskedText || candidate.text, entry.maskedText || entry.text, 5)) {
     return true;
   }
 
-  const candidateLoggedAt = candidate.loggedAtMs ?? 0;
-  const entryLoggedAt = entry.loggedAtMs ?? Date.now();
-  const sameShortWindow = candidateLoggedAt > 0 && Math.abs(entryLoggedAt - candidateLoggedAt) <= 3200;
   const sameRiskTurn =
     sameShortWindow &&
     candidate.eventType !== "normal" &&
@@ -1200,7 +1219,7 @@ export default function App() {
     }
 
     const logEntries: ConversationEntry[] = timelineEntries.map((log) => {
-      const raisedOnly = log.eventType === "raised";
+      const raisedOnly = log.eventType === "raised" && log.audioOnly;
       return {
         id: log.id,
         timestamp: log.timestamp,
@@ -1209,6 +1228,7 @@ export default function App() {
         detail: raisedOnly ? "변조 적용 · 볼륨 완화" : timelineDetailFor(log),
         tone: log.eventType === "normal" ? "normal" : "risk",
         eventType: log.eventType,
+        rowClass: raisedOnly ? "raised" : log.eventType === "raised" ? "raised-utterance" : log.eventType,
       };
     });
     return [...logEntries, ...liveEntry];
@@ -1972,6 +1992,7 @@ export default function App() {
       time: now(),
       timestamp: currentSessionTimestamp(),
       loggedAtMs: Date.now(),
+      audioOnly: isRaisedAudioOnlyResult(result),
     };
 
     const mergeTargets = logsRef.current.slice(0, 20).filter((candidate) => shouldMergeLogCandidate(candidate, entry));
@@ -1993,6 +2014,7 @@ export default function App() {
         policyActions: uniqueValues(candidates.flatMap((item) => item.policyActions)),
         maskedText: mergedText,
         text: mergedText,
+        audioOnly: candidates.every((item) => item.audioOnly),
       };
       const nextLogs = [merged, ...logsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
       const nextReportLogs = [merged, ...reportLogsRef.current.filter((item) => !targetIds.has(item.id))].slice(0, 200);
@@ -2229,8 +2251,9 @@ export default function App() {
         setStatus("음성 입력 대기 중");
         return;
       }
-      const displayText = recentBrowserDictation() || clean;
-      const openAiVisibleDictation = !browserDictationRef.current;
+      const recentBrowserText = recentBrowserDictation();
+      const displayText = recentBrowserText || clean;
+      const openAiVisibleDictation = !browserDictationRef.current || !recentBrowserText;
       if (openAiVisibleDictation) setLiveTranscript(maskVisibleText(clean));
       if (isLikelyLiveSttHallucination(clean)) {
         if (openAiVisibleDictation) setLiveTranscript("");
@@ -3047,7 +3070,7 @@ export default function App() {
             <div className="conversation-list" ref={timelineRef}>
               {conversationEntries.length === 0 && <p className="empty">보호 이벤트가 감지되면 [00:00] 형식으로 바로 기록됩니다.</p>}
               {conversationEntries.map((entry) => (
-                <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.eventType ?? ""}`}>
+                <article key={entry.id} className={`conversation-row ${entry.tone} ${entry.rowClass ?? entry.eventType ?? ""}`}>
                   <time>[{entry.timestamp}]</time>
                   <b>{entry.role === "시스템" ? "보호 조치" : entry.role}</b>
                   <div>
