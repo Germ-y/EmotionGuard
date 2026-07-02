@@ -133,6 +133,8 @@ button:hover { transform: translateY(-1px); }
 .process-strip {
   --process-line-y: 18px;
   --process-step-y: 11px;
+  --process-cool: 96, 139, 244;
+  --process-warm: 239, 116, 51;
   position: relative;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -152,7 +154,7 @@ button:hover { transform: translateY(-1px); }
   right: 52px;
   height: 2px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, #d9e1ea 8%, #d9e1ea 92%, transparent);
+  background: linear-gradient(90deg, transparent, #d5dde8 8%, #cfd9e8 50%, #d5dde8 92%, transparent);
 }
 .process-step {
   position: relative;
@@ -174,10 +176,10 @@ button:hover { transform: translateY(-1px); }
   height: 8px;
   border: 0;
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.96) 0 24%, rgba(203, 213, 225, 0.52) 58%, transparent 76%);
+  background: radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.98) 0 23%, rgba(194, 205, 220, 0.68) 54%, rgba(148, 163, 184, 0.18) 72%, transparent 82%);
   box-shadow:
-    0 0 8px rgba(148, 163, 184, 0.18),
-    0 0 16px rgba(226, 232, 240, 0.12);
+    0 0 8px rgba(148, 163, 184, 0.28),
+    0 0 18px rgba(203, 213, 225, 0.2);
   transform: translate(-50%, -50%);
 }
 .process-step::after {
@@ -200,18 +202,19 @@ button:hover { transform: translateY(-1px); }
   width: 9px;
   height: 9px;
   top: var(--process-step-y);
-  background: radial-gradient(circle at 48% 42%, rgba(255, 255, 255, 1) 0 20%, rgba(248, 250, 252, 0.92) 42%, rgba(203, 213, 225, 0.46) 70%, transparent 82%);
+  background: radial-gradient(circle at 48% 42%, rgba(255, 255, 255, 1) 0 18%, rgba(var(--process-cool), 0.62) 48%, rgba(var(--process-cool), 0.2) 72%, transparent 84%);
   box-shadow:
     0 0 10px rgba(255, 255, 255, 0.85),
-    0 0 18px rgba(203, 213, 225, 0.34);
+    0 0 20px rgba(var(--process-cool), 0.34),
+    0 0 34px rgba(var(--process-cool), 0.16);
 }
 .process-step.done::after {
   width: 34px;
   height: 34px;
   background:
-    radial-gradient(circle at center, transparent 0 38%, rgba(226, 232, 240, 0.34) 42%, rgba(226, 232, 240, 0.18) 54%, transparent 72%),
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.28) 0 18%, transparent 58%);
-  box-shadow: 0 0 18px rgba(203, 213, 225, 0.18);
+    radial-gradient(circle at center, transparent 0 34%, rgba(var(--process-cool), 0.26) 42%, rgba(var(--process-cool), 0.12) 58%, transparent 74%),
+    radial-gradient(circle at center, rgba(var(--process-cool), 0.16) 0 20%, transparent 60%);
+  box-shadow: 0 0 22px rgba(var(--process-cool), 0.2);
 }
 .process-step.active {
   background: transparent;
@@ -221,21 +224,21 @@ button:hover { transform: translateY(-1px); }
   width: 10px;
   height: 10px;
   top: var(--process-step-y);
-  background: radial-gradient(circle at 47% 38%, rgba(255, 255, 255, 1) 0 18%, rgba(248, 250, 252, 0.98) 42%, rgba(203, 213, 225, 0.62) 70%, transparent 84%);
+  background: radial-gradient(circle at 47% 38%, rgba(255, 255, 255, 1) 0 16%, rgba(255, 221, 194, 0.92) 39%, rgba(var(--process-warm), 0.58) 68%, transparent 84%);
   box-shadow:
     0 0 8px rgba(255, 255, 255, 0.95),
-    0 0 18px rgba(226, 232, 240, 0.46),
-    0 0 32px rgba(203, 213, 225, 0.22);
+    0 0 18px rgba(var(--process-warm), 0.42),
+    0 0 34px rgba(var(--process-warm), 0.2);
 }
 .process-step.active::after {
   width: 46px;
   height: 46px;
   background:
-    radial-gradient(circle at center, transparent 0 34%, rgba(255, 255, 255, 0.5) 37%, rgba(226, 232, 240, 0.36) 49%, rgba(203, 213, 225, 0.14) 62%, transparent 76%),
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.34) 0 16%, rgba(226, 232, 240, 0.12) 44%, transparent 70%);
+    radial-gradient(circle at center, transparent 0 32%, rgba(255, 233, 214, 0.5) 37%, rgba(var(--process-warm), 0.26) 50%, rgba(var(--process-warm), 0.1) 64%, transparent 78%),
+    radial-gradient(circle at center, rgba(255, 239, 224, 0.36) 0 17%, rgba(var(--process-warm), 0.12) 46%, transparent 72%);
   box-shadow:
-    0 0 16px rgba(255, 255, 255, 0.42),
-    0 0 28px rgba(203, 213, 225, 0.24);
+    0 0 16px rgba(255, 255, 255, 0.46),
+    0 0 30px rgba(var(--process-warm), 0.24);
   animation: processPulse 1.9s ease-out infinite;
 }
 .process-step strong {
@@ -244,7 +247,7 @@ button:hover { transform: translateY(-1px); }
   font-size: 11px;
 }
 .process-step.active strong {
-  color: var(--text);
+  color: #111827;
 }
 .process-step span {
   display: none;
