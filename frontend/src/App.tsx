@@ -298,6 +298,17 @@ function loudnessGainForLevel(level: number, threshold: number, strength: number
   return clamp(1 - reduction, 1 - maxReduction, 1 - startReduction);
 }
 
+function createVoiceChangeCurve(amount = 220) {
+  const samples = 1024;
+  const curve = new Float32Array(samples);
+  const drive = amount / 10;
+  for (let index = 0; index < samples; index += 1) {
+    const x = (index * 2) / samples - 1;
+    curve[index] = ((1 + drive) * x) / (1 + drive * Math.abs(x));
+  }
+  return curve;
+}
+
 function createAutoThresholdBaseline(startedAtMs = 0): AutoThresholdBaseline {
   return { startedAtMs, levels: [], voiceLevels: [], lastUpdateMs: 0 };
 }
@@ -1082,6 +1093,7 @@ export default function App() {
     dryGain?: GainNode;
     processedGain?: GainNode;
     loudnessGain?: GainNode;
+    voiceChangeGain?: GainNode;
     modulationGain?: GainNode;
     modulationCarrierGain?: GainNode;
     raf?: number;
@@ -1334,6 +1346,9 @@ export default function App() {
     const dryGain = ctx.createGain();
     const processedGain = ctx.createGain();
     const loudnessGain = ctx.createGain();
+    const voiceChangeFilter = ctx.createBiquadFilter();
+    const voiceChangeShaper = ctx.createWaveShaper();
+    const voiceChangeGain = ctx.createGain();
     const modulationGain = ctx.createGain();
     const modulationCarrier = ctx.createOscillator();
     const modulationCarrierGain = ctx.createGain();
@@ -1343,21 +1358,31 @@ export default function App() {
     dryGain.gain.value = 1;
     processedGain.gain.value = 0;
     loudnessGain.gain.value = 1;
+    voiceChangeFilter.type = "bandpass";
+    voiceChangeFilter.frequency.value = 760;
+    voiceChangeFilter.Q.value = 8.5;
+    voiceChangeShaper.curve = createVoiceChangeCurve();
+    voiceChangeShaper.oversample = "4x";
+    voiceChangeGain.gain.value = 0;
     modulationGain.gain.value = 1;
-    modulationCarrier.type = "square";
-    modulationCarrier.frequency.value = 54;
+    modulationCarrier.type = "sawtooth";
+    modulationCarrier.frequency.value = 96;
     modulationCarrierGain.gain.value = 0;
     outGain.gain.value = monitorOn ? MONITOR_GAIN : 0;
 
     source.connect(dryDelay);
     dryDelay.connect(dryGain);
     dryGain.connect(loudnessGain);
+    dryDelay.connect(voiceChangeFilter);
+    voiceChangeFilter.connect(voiceChangeShaper);
+    voiceChangeShaper.connect(modulationGain);
+    modulationGain.connect(voiceChangeGain);
+    voiceChangeGain.connect(loudnessGain);
     source.connect(jungle.input);
     jungle.output.connect(processedDelay);
     modulationCarrier.connect(modulationCarrierGain);
     modulationCarrierGain.connect(modulationGain.gain);
-    processedDelay.connect(modulationGain);
-    modulationGain.connect(processedGain);
+    processedDelay.connect(processedGain);
     processedGain.connect(loudnessGain);
     loudnessGain.connect(outGain);
     outGain.connect(ctx.destination);
@@ -1373,6 +1398,7 @@ export default function App() {
       dryGain,
       processedGain,
       loudnessGain,
+      voiceChangeGain,
       modulationGain,
       modulationCarrierGain,
     };
@@ -1473,13 +1499,14 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = pitchProtection.modulationTriggered ? 1 : offset < 0 ? 0.85 : 0;
-        current.dryGain.gain.setTargetAtTime(1 - processedMix, current.ctx.currentTime, 0.04);
-        current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
+        const processedMix = pitchProtection.modulationTriggered ? 0 : offset < 0 ? 0.85 : 0;
+        current.dryGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0 : 1 - processedMix, current.ctx.currentTime, 0.025);
+        current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
-      if (current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        current.modulationGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.58 : 1, current.ctx.currentTime, 0.025);
-        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.48 : 0, current.ctx.currentTime, 0.025);
+      if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
+        current.voiceChangeGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 1.08 : 0, current.ctx.currentTime, 0.02);
+        current.modulationGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.06 : 1, current.ctx.currentTime, 0.02);
+        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.92 : 0, current.ctx.currentTime, 0.02);
       }
       if (current.loudnessGain && current.ctx) {
         current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
