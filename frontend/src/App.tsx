@@ -242,6 +242,12 @@ function pitchOffsetForLevel(level: number, threshold: number, gender: "male" | 
   return -(curve.base + curve.span * Math.min(1, over));
 }
 
+function loudnessGainForLevel(level: number, threshold: number) {
+  if (level < threshold) return 1;
+  const over = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
+  return clamp(0.86 - over * 0.32, 0.54, 0.86);
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -988,6 +994,7 @@ export default function App() {
     outGain?: GainNode;
     dryGain?: GainNode;
     processedGain?: GainNode;
+    loudnessGain?: GainNode;
     raf?: number;
     raisedSustainMs: number;
     raisedLatched: boolean;
@@ -1196,23 +1203,26 @@ export default function App() {
     const processedDelay = ctx.createDelay(Math.max(3, CFG.outputDelay + 0.4));
     const dryGain = ctx.createGain();
     const processedGain = ctx.createGain();
+    const loudnessGain = ctx.createGain();
     const outGain = ctx.createGain();
     dryDelay.delayTime.value = CFG.outputDelay;
     processedDelay.delayTime.value = CFG.outputDelay;
     dryGain.gain.value = 1;
     processedGain.gain.value = 0;
+    loudnessGain.gain.value = 1;
     outGain.gain.value = monitorOn ? MONITOR_GAIN : 0;
 
     source.connect(dryDelay);
     dryDelay.connect(dryGain);
-    dryGain.connect(outGain);
+    dryGain.connect(loudnessGain);
     source.connect(jungle.input);
     jungle.output.connect(processedDelay);
     processedDelay.connect(processedGain);
-    processedGain.connect(outGain);
+    processedGain.connect(loudnessGain);
+    loudnessGain.connect(outGain);
     outGain.connect(ctx.destination);
 
-    audioRef.current = { ...audioRef.current, stream, ctx, analyser, jungle, outGain, dryGain, processedGain };
+    audioRef.current = { ...audioRef.current, stream, ctx, analyser, jungle, outGain, dryGain, processedGain, loudnessGain };
     runMeter();
   }
 
@@ -1280,6 +1290,9 @@ export default function App() {
         const processedMix = offset < 0 ? 0.85 : 0;
         current.dryGain.gain.setTargetAtTime(1 - processedMix, current.ctx.currentTime, 0.04);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
+      }
+      if (current.loudnessGain && current.ctx) {
+        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, threshold), current.ctx.currentTime, 0.05);
       }
 
       if (!announcingRef.current && nextLevel >= threshold) {
