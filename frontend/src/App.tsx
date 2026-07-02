@@ -148,7 +148,6 @@ const actionLabel: Record<PolicyAction, string> = {
 const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   local: "비윤리 표현 사전",
   openai: "GPT API",
-  claude: "Claude API",
   fallback: "기본 문맥 엔진",
 };
 
@@ -190,7 +189,7 @@ const demoProcessSteps: Array<{ id: DemoPhase; label: string; detail: string }> 
   { id: "input", label: "음성 입력", detail: "20ms Frame" },
   { id: "detect", label: "빠른 감지", detail: "RMS/STT/비윤리 표현" },
   { id: "mask", label: "보호 마스크", detail: "비프음/피치/볼륨" },
-  { id: "context", label: "3초 맥락", detail: "GPT/Claude/기본 문맥" },
+  { id: "context", label: "3초 맥락", detail: "GPT/기본 문맥" },
   { id: "policy", label: "정책 엔진", detail: "단계/경고/보고서" },
 ];
 
@@ -836,7 +835,7 @@ function ReportPage({ reports, onNavigateHome }: { reports: IncidentReport[]; on
                 <article key={evidence.id} className={`report-evidence-card ${evidence.eventType}`}>
                   <div className="report-evidence-meta">
                     <small>[{evidence.timestamp}] · {eventLabel[evidence.eventType]} · {pathLabel[evidence.detectionPath]}</small>
-                    <b>{evidence.source === "openai" ? "GPT" : evidence.source === "claude" ? "Claude" : evidence.source === "local" ? "비윤리 표현" : "보조 판단"}</b>
+                    <b>{evidence.source === "openai" ? "GPT" : evidence.source === "local" ? "비윤리 표현" : "보조 판단"}</b>
                   </div>
                   <p><span>보호 표시</span>{maskVisibleText(evidence.maskedText || evidence.text)}</p>
                   <div className="report-evidence-actions">
@@ -1651,10 +1650,10 @@ export default function App() {
       if (displayResult.policyActions.includes("mute") && !options.suppressImmediateMask) beepProfanitySegment(displayResult, text, timing);
       if (displayResult.eventType !== "normal") setInterimText(`${eventLabel[displayResult.eventType]} 감지 - ${maskVisibleText(displayResult.maskedText)}`);
     } else if (displayResult.eventType !== "normal") {
-      const engine = displayResult.source === "openai" ? "GPT" : displayResult.source === "claude" ? "Claude" : "문맥 엔진";
+      const engine = displayResult.source === "openai" ? "GPT" : "문맥 엔진";
       setStatus(`${engine} 판단: ${eventLabel[displayResult.eventType]}`);
     } else {
-      const engine = displayResult.source === "openai" ? "GPT" : displayResult.source === "claude" ? "Claude" : "3초 문맥";
+      const engine = displayResult.source === "openai" ? "GPT" : "3초 문맥";
       setStatus(`${engine} 판단 완료`);
     }
 

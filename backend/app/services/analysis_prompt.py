@@ -1,12 +1,7 @@
 import json
-import re
 from typing import Any
 
-import httpx
-
-from app.config import settings
-from app.models import AnalysisResult, AudioFeatures, FeedbackContext
-from app.services.local_classifier import conservative_fail
+from app.models import AudioFeatures, FeedbackContext
 
 
 ANALYST_SYSTEM = """당신은 콜센터 상담사 보호 시스템의 실시간 발화 분석 엔진입니다.
@@ -80,57 +75,3 @@ def build_analysis_payload(
     if feedback_context:
         payload["feedbackContext"] = feedback_context.model_dump(exclude_none=True)
     return json.dumps(payload, ensure_ascii=False)
-
-
-def _coerce_result(payload: dict[str, Any]) -> AnalysisResult:
-    emotion = payload.get("emotion")
-    severity = payload.get("severity")
-
-    return AnalysisResult(
-        abusive=bool(payload.get("abusive")),
-        severity=severity if severity in {"none", "mild", "severe"} else "none",
-        categories=[item for item in payload.get("categories", []) if isinstance(item, str)]
-        if isinstance(payload.get("categories"), list)
-        else [],
-        emotion=emotion if emotion in {"normal", "frustrated", "angry", "threatening"} else "normal",
-        sexual=bool(payload.get("sexual")),
-        source="claude",
-        triggeredWords=[],
-    )
-
-
-async def classify_with_claude(
-    text: str,
-    audio_features: AudioFeatures | None = None,
-    feedback_context: FeedbackContext | None = None,
-) -> AnalysisResult:
-    if not settings.anthropic_api_key:
-        return conservative_fail(text)
-
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "content-type": "application/json",
-                    "x-api-key": settings.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model": settings.anthropic_model,
-                    "max_tokens": settings.anthropic_max_tokens,
-                    "system": ANALYST_SYSTEM,
-                    "messages": [{"role": "user", "content": build_analysis_payload(text, audio_features, feedback_context)}],
-                },
-            )
-            response.raise_for_status()
-
-        data = response.json()
-        raw = next((part.get("text", "") for part in data.get("content", []) if part.get("type") == "text"), "")
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if not match:
-            return conservative_fail(text)
-
-        return _coerce_result(json.loads(match.group(0)))
-    except Exception:
-        return conservative_fail(text)

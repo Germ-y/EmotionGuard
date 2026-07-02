@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 Emotion = Literal["normal", "frustrated", "angry", "threatening"]
 Severity = Literal["none", "mild", "severe"]
-Source = Literal["local", "openai", "claude", "fallback"]
+Source = Literal["local", "openai", "fallback"]
 EventType = Literal["normal", "abuse", "sexual", "raised", "abuse-raised"]
 AnalysisMode = Literal["immediate", "context_snapshot"]
 PolicyAction = Literal["mute", "pitch_shift", "volume_reduce", "warn_tts", "escalate", "report"]

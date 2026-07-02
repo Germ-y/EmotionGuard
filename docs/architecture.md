@@ -27,7 +27,7 @@
 - 3초 단위 문맥 스냅샷 구성
 - STT 텍스트와 음향 메타데이터를 함께 구성
 - 맥락 엔진이 성희롱, 협박, 반복성, 감정 상태를 판단
-- `OPENAI_API_KEY`가 있으면 GPT API를 우선 호출하고, 없으면 Claude API, 둘 다 없으면 fallback 보수 판단을 사용
+- `OPENAI_API_KEY`가 있으면 GPT API를 호출하고, 없으면 fallback 보수 판단을 사용
 - 느린 판단은 즉시 비프음 처리보다는 경고, 에스컬레이션, 보고서에 사용
 
 ### 정책 엔진
@@ -67,6 +67,6 @@
 | 음향 메타데이터 | `frontend/src/App.tsx`의 RMS/pitch/ZCR/spectral centroid 추출 |
 | 3초 문맥 스냅샷 | `context_snapshot` 분석 모드 |
 | 비윤리 표현 사전 감지 | `backend/app/data/dictionaries.json`, `local_classifier.py` |
-| 맥락 엔진 판단 | `backend/app/services/context_engine.py` (`source=openai`, `source=claude`, `source=fallback`) |
+| 맥락 엔진 판단 | `backend/app/services/context_engine.py` (`source=openai`, `source=fallback`) |
 | 정책 엔진 | `backend/app/services/policy_engine.py` 및 프론트 단계 카운터 |
 | 로그/대시보드 | React 상담사 대시보드 |

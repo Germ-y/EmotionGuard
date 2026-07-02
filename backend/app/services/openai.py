@@ -6,7 +6,7 @@ import httpx
 
 from app.config import settings
 from app.models import AnalysisResult, AudioFeatures, FeedbackContext, TranscribeResponse, TranscriptionWord
-from app.services.claude import ANALYST_SYSTEM, build_analysis_payload
+from app.services.analysis_prompt import ANALYST_SYSTEM, build_analysis_payload
 from app.services.local_classifier import conservative_fail
 
 
