@@ -14,6 +14,7 @@ import {
   TranscriptionWord,
 } from "./lib/api";
 import { Jungle } from "./lib/audio/jungle";
+import { createVoicemodClient, type VoicemodStatus } from "./lib/voicemod";
 
 type LogEntry = AnalyzeResponse & {
   id: string;
@@ -116,6 +117,7 @@ const CFG = {
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
+  voiceChangeHoldMs: 1600,
   voiceLevelThreshold: 0.35,
   voicePeakThreshold: 0.002,
   voiceHoldMs: 1200,
@@ -180,6 +182,24 @@ const sourceLabel: Record<AnalyzeResponse["source"], string> = {
   openai: "GPT API",
   fallback: "기본 문맥 엔진",
 };
+
+function voicemodLabel(status: VoicemodStatus) {
+  switch (status) {
+    case "connecting":
+      return "외부 변조 연결 중";
+    case "pending":
+      return "외부 변조 승인 대기";
+    case "ready":
+      return "외부 변조 준비";
+    case "active":
+      return "외부 변조 중";
+    case "error":
+      return "외부 변조 연결 필요";
+    case "disabled":
+    default:
+      return "외부 변조 대기";
+  }
+}
 
 function timelineDetailFor(log: LogEntry) {
   if (log.eventType === "normal") return "정상 · STT 기록";
@@ -1038,6 +1058,7 @@ export default function App() {
   const [emotionPrediction, setEmotionPrediction] = useState<EmotionPrediction | null>(null);
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext>(() => initialFeedbackContext());
   const [latestDetection, setLatestDetection] = useState<LatestDetectionView | null>(null);
+  const [voicemodStatus, setVoicemodStatus] = useState<VoicemodStatus>("disabled");
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
@@ -1083,6 +1104,11 @@ export default function App() {
   const lastNormalTranscriptRef = useRef<{ text: string; at: number } | null>(null);
   const lastContextSnapshotRef = useRef("");
   const emotionPredictRef = useRef<{ inFlight: boolean; lastAt: number }>({ inFlight: false, lastAt: 0 });
+  const voicemodRef = useRef<ReturnType<typeof createVoicemodClient> | null>(null);
+  const voicemodStatusRef = useRef<VoicemodStatus>("disabled");
+  const voiceChangeUntilAtRef = useRef(0);
+  const lastVoicemodActiveRef = useRef(false);
+  const lastVoicemodAttemptAtRef = useRef(0);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -1179,6 +1205,32 @@ export default function App() {
 
   function currentSessionTimestamp() {
     return formatDuration(currentSessionSeconds());
+  }
+
+  function updateVoicemodStatus(nextStatus: VoicemodStatus) {
+    voicemodStatusRef.current = nextStatus;
+    setVoicemodStatus(nextStatus);
+  }
+
+  function ensureVoicemodClient() {
+    if (!voicemodRef.current) {
+      voicemodRef.current = createVoicemodClient(updateVoicemodStatus);
+    }
+    return voicemodRef.current;
+  }
+
+  function commandVoicemodVoiceChange(enabled: boolean, force = false) {
+    const nowMs = Date.now();
+    const shouldRetryActive =
+      enabled &&
+      voicemodStatusRef.current === "error" &&
+      nowMs - lastVoicemodAttemptAtRef.current > 2500;
+
+    if (!force && enabled === lastVoicemodActiveRef.current && !shouldRetryActive) return;
+
+    lastVoicemodActiveRef.current = enabled;
+    lastVoicemodAttemptAtRef.current = nowMs;
+    void ensureVoicemodClient().setVoiceChange(enabled);
   }
 
   async function predictLiveEmotion(features: AudioFeatures) {
@@ -1462,6 +1514,10 @@ export default function App() {
         pitchThresholdRef.current,
         attenuationStrengthRef.current,
       );
+      if (pitchProtection.modulationTriggered) {
+        voiceChangeUntilAtRef.current = Date.now() + CFG.voiceChangeHoldMs;
+      }
+      const voiceChangeActive = pitchProtection.modulationTriggered || Date.now() < voiceChangeUntilAtRef.current;
       const offset = pitchProtection.offset;
       const nextFeatures: AudioFeatures = {
         rms: rounded(rms, 4),
@@ -1482,7 +1538,7 @@ export default function App() {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
         if (!voiceActivity) setEmotionPrediction(null);
-        const nextStatus = pitchProtection.modulationTriggered
+        const nextStatus = voiceChangeActive
           ? pitchProtection.pitchTriggered
             ? "피치 기준 초과 음성 변조"
             : "고성 기준 초과 음성 변조"
@@ -1499,15 +1555,16 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = pitchProtection.modulationTriggered ? 0 : offset < 0 ? 0.85 : 0;
-        current.dryGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0 : 1 - processedMix, current.ctx.currentTime, 0.025);
+        const processedMix = voiceChangeActive ? 0 : offset < 0 ? 0.85 : 0;
+        current.dryGain.gain.setTargetAtTime(voiceChangeActive ? 0 : 1 - processedMix, current.ctx.currentTime, 0.025);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        current.voiceChangeGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 1.08 : 0, current.ctx.currentTime, 0.02);
-        current.modulationGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.06 : 1, current.ctx.currentTime, 0.02);
-        current.modulationCarrierGain.gain.setTargetAtTime(pitchProtection.modulationTriggered ? 0.92 : 0, current.ctx.currentTime, 0.02);
+        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 1.08 : 0, current.ctx.currentTime, 0.02);
+        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.06 : 1, current.ctx.currentTime, 0.02);
+        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.92 : 0, current.ctx.currentTime, 0.02);
       }
+      commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
         current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
       }
@@ -2683,6 +2740,8 @@ export default function App() {
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setMonitorEnabled(true);
     setActive(true);
+    voiceChangeUntilAtRef.current = 0;
+    commandVoicemodVoiceChange(false, true);
 
     try {
       await startAudio(true);
@@ -2702,6 +2761,8 @@ export default function App() {
       activeRef.current = false;
       sessionRunIdRef.current += 1;
       sessionStartedAtMsRef.current = null;
+      voiceChangeUntilAtRef.current = 0;
+      commandVoicemodVoiceChange(false, true);
       setActive(false);
       setError("마이크 권한이 필요합니다.");
     }
@@ -2714,6 +2775,8 @@ export default function App() {
     elapsedRef.current = finalElapsed;
     const state = audioRef.current;
     liveChunkRef.current.enabled = false;
+    voiceChangeUntilAtRef.current = 0;
+    commandVoicemodVoiceChange(false, true);
     if (liveChunkRef.current.timer) window.clearTimeout(liveChunkRef.current.timer);
     if (state.mediaRecorder?.state === "recording") state.mediaRecorder.stop();
     state.recognition?.stop();
@@ -2856,7 +2919,11 @@ export default function App() {
             </label>
             <div className="monitor-control">
               <span>청취</span>
-              <button className={monitorEnabled ? "selected" : ""} onClick={() => setMonitorEnabled((prev) => !prev)}>
+              <button
+                className={monitorEnabled ? "selected" : ""}
+                title={voicemodLabel(voicemodStatus)}
+                onClick={() => setMonitorEnabled((prev) => !prev)}
+              >
                 {monitorEnabled ? "켜짐" : "꺼짐"}
               </button>
             </div>
