@@ -4,9 +4,11 @@ import {
   analyzeUtterance,
   AnalyzeResponse,
   AudioFeatures,
+  EmotionPrediction,
   EventType,
   FeedbackContext,
   PolicyAction,
+  predictEmotion,
   transcribeAudioBlob,
   TranscribeResponse,
   TranscriptionWord,
@@ -144,6 +146,19 @@ const actionLabel: Record<PolicyAction, string> = {
   warn_tts: "경고 기록",
   escalate: "단계 상승",
   report: "보고서",
+};
+
+const emotionLabel: Record<EmotionPrediction["label"], string> = {
+  normal: "안정",
+  frustrated: "긴장",
+  angry: "분노",
+  threatening: "위협",
+};
+
+const emotionSourceLabel: Record<EmotionPrediction["source"], string> = {
+  skt_centroid_model: "SKT 모델",
+  skt_acoustic_baseline: "SKT 기준",
+  fallback: "기본 기준",
 };
 
 const sourceLabel: Record<AnalyzeResponse["source"], string> = {
@@ -326,6 +341,12 @@ function mergeUtteranceFeatures(base: AudioFeatures, text: string, timing?: Spee
 function featureValue(value: number | undefined, suffix = "", voiceActivity = true) {
   if (!voiceActivity) return "대기";
   return value === undefined ? "계산중" : `${value}${suffix}`;
+}
+
+function emotionPredictionValue(prediction: EmotionPrediction | null, voiceActivity = true) {
+  if (!voiceActivity) return "대기";
+  if (!prediction) return "계산중";
+  return `${emotionLabel[prediction.label]} ${Math.round(prediction.confidence * 100)}%`;
 }
 
 function normalizeSpeechWord(value: string) {
@@ -922,6 +943,7 @@ export default function App() {
   const [escalation, setEscalation] = useState<EscalationState>(() => initialEscalation());
   const [reportArchive, setReportArchive] = useState<IncidentReport[]>(() => loadReportArchive());
   const [audioFeatures, setAudioFeatures] = useState<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
+  const [emotionPrediction, setEmotionPrediction] = useState<EmotionPrediction | null>(null);
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext>(() => initialFeedbackContext());
   const [latestDetection, setLatestDetection] = useState<LatestDetectionView | null>(null);
   const [error, setError] = useState("");
@@ -962,6 +984,7 @@ export default function App() {
   });
   const lastNormalTranscriptRef = useRef<{ text: string; at: number } | null>(null);
   const lastContextSnapshotRef = useRef("");
+  const emotionPredictRef = useRef<{ inFlight: boolean; lastAt: number }>({ inFlight: false, lastAt: 0 });
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -1053,6 +1076,21 @@ export default function App() {
 
   function currentSessionTimestamp() {
     return formatDuration(currentSessionSeconds());
+  }
+
+  async function predictLiveEmotion(features: AudioFeatures) {
+    if (!activeRef.current || !features.voiceActivity) return;
+    const nowMs = Date.now();
+    if (emotionPredictRef.current.inFlight || nowMs - emotionPredictRef.current.lastAt < 900) return;
+    emotionPredictRef.current = { inFlight: true, lastAt: nowMs };
+    try {
+      const prediction = await predictEmotion(features);
+      if (activeRef.current) setEmotionPrediction(prediction);
+    } catch {
+      // Emotion prediction is advisory only; live protection continues without it.
+    } finally {
+      emotionPredictRef.current.inFlight = false;
+    }
   }
 
   function dictationPrompt() {
@@ -1222,10 +1260,14 @@ export default function App() {
         voiceActivity,
       };
       audioFeaturesRef.current = nextFeatures;
+      if (voiceActivity) {
+        void predictLiveEmotion(nextFeatures);
+      }
 
       if (t - featureUiTsRef.current > 220) {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
+        if (!voiceActivity) setEmotionPrediction(null);
         const nextStatus = offset < 0
           ? "고성 구간 피치/볼륨 완화"
           : muted
@@ -1677,6 +1719,7 @@ export default function App() {
     }
 
     const displayResult = withDisplayMask(result, text);
+    if (displayResult.emotionPrediction) setEmotionPrediction(displayResult.emotionPrediction);
     const shouldLog =
       !options.deferLog &&
       (
@@ -2380,6 +2423,7 @@ export default function App() {
     logsRef.current = [];
     reportLogsRef.current = [];
     setLatestDetection(null);
+    setEmotionPrediction(null);
     setDemoDialogue([]);
     setLiveTranscript("");
     lastBrowserDictationRef.current = null;
@@ -2392,6 +2436,7 @@ export default function App() {
     feedbackContextRef.current = initialFeedbackContext();
     setFeedbackContext(feedbackContextRef.current);
     lastContextSnapshotRef.current = "";
+    emotionPredictRef.current = { inFlight: false, lastAt: 0 };
     seenEventRef.current.clear();
     lastBeepRef.current = null;
     lastFeedbackRef.current = null;
@@ -2459,6 +2504,7 @@ export default function App() {
     setActive(false);
     setElapsed(finalElapsed);
     setLiveTranscript("");
+    setEmotionPrediction(null);
     setLevel(0);
     setMuted(false);
     setStatus("대기 중");
@@ -2573,6 +2619,7 @@ export default function App() {
           </div>
           <section className={`acoustic-panel ${audioFeatures.voiceActivity ? "active" : ""}`}>
             <div><span>입력 상태</span><strong>{audioFeatures.voiceActivity ? "발화 감지" : active ? "무음 대기" : "마이크 대기"}</strong></div>
+            <div><span>Emotion</span><strong>{emotionPredictionValue(emotionPrediction, audioFeatures.voiceActivity)}</strong></div>
             <div><span>Pitch</span><strong>{featureValue(audioFeatures.pitchHz, "Hz", audioFeatures.voiceActivity)}</strong></div>
             <div><span>Peak</span><strong>{featureValue(audioFeatures.peak, "", audioFeatures.voiceActivity)}</strong></div>
             <div><span>ZCR</span><strong>{featureValue(audioFeatures.zeroCrossingRate, "", audioFeatures.voiceActivity)}</strong></div>
@@ -2620,6 +2667,10 @@ export default function App() {
             <div>
               <span>음향 추세</span>
               <strong>{feedbackContext.acousticTrend === "escalating" ? "상승" : feedbackContext.acousticTrend === "quiet" ? "무음" : "안정"}</strong>
+            </div>
+            <div>
+              <span>감정 모델</span>
+              <strong>{emotionPrediction ? `${emotionLabel[emotionPrediction.label]} · ${emotionSourceLabel[emotionPrediction.source]}` : "대기"}</strong>
             </div>
           </section>
           <section className="report-link-card">

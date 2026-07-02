@@ -10,6 +10,7 @@ EventType = Literal["normal", "abuse", "sexual", "raised", "abuse-raised"]
 AnalysisMode = Literal["immediate", "context_snapshot"]
 PolicyAction = Literal["mute", "pitch_shift", "volume_reduce", "warn_tts", "escalate", "report"]
 AcousticTrend = Literal["quiet", "stable", "escalating"]
+EmotionPredictionSource = Literal["skt_centroid_model", "skt_acoustic_baseline", "fallback"]
 
 
 class AudioFeatures(BaseModel):
@@ -43,6 +44,22 @@ class FeedbackContext(BaseModel):
     notes: list[str] = Field(default_factory=list, max_length=20)
 
 
+class EmotionPrediction(BaseModel):
+    label: Emotion
+    confidence: float = Field(ge=0, le=1)
+    source: EmotionPredictionSource
+    scores: dict[str, float] = Field(default_factory=dict)
+    reasons: list[str] = Field(default_factory=list, max_length=8)
+
+
+class EmotionPredictRequest(BaseModel):
+    audioFeatures: AudioFeatures
+
+
+class EmotionPredictResponse(EmotionPrediction):
+    audioFeatures: AudioFeatures
+
+
 class AnalyzeRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     raised: bool = False
@@ -71,6 +88,7 @@ class AnalyzeResponse(AnalysisResult):
     policyActions: list[PolicyAction]
     audioFeatures: AudioFeatures | None = None
     feedbackContext: FeedbackContext | None = None
+    emotionPrediction: EmotionPrediction | None = None
 
 
 class TranscriptionWord(BaseModel):

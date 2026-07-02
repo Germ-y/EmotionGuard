@@ -34,6 +34,14 @@ export interface FeedbackContext {
   notes: string[];
 }
 
+export interface EmotionPrediction {
+  label: Emotion;
+  confidence: number;
+  source: "skt_centroid_model" | "skt_acoustic_baseline" | "fallback";
+  scores: Record<string, number>;
+  reasons: string[];
+}
+
 export interface AnalyzeResponse {
   abusive: boolean;
   severity: "none" | "mild" | "severe";
@@ -50,6 +58,7 @@ export interface AnalyzeResponse {
   policyActions: PolicyAction[];
   audioFeatures?: AudioFeatures | null;
   feedbackContext?: FeedbackContext | null;
+  emotionPrediction?: EmotionPrediction | null;
 }
 
 export interface TranscriptionWord {
@@ -85,6 +94,20 @@ export async function analyzeUtterance(
   }
 
   return response.json() as Promise<AnalyzeResponse>;
+}
+
+export async function predictEmotion(audioFeatures: AudioFeatures): Promise<EmotionPrediction> {
+  const response = await fetch(`${API_BASE_URL}/api/emotion/predict`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ audioFeatures }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Emotion prediction failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<EmotionPrediction>;
 }
 
 export async function transcribeAudioBlob(file: Blob, filename = "demo-audio.mp3", prompt = ""): Promise<TranscribeResponse> {

@@ -21,6 +21,9 @@ BASE_COLUMNS = [
     "speaker_id",
     "speaker_gender",
     "emotion",
+    "emotion_index",
+    "emotion_detail",
+    "service_emotion",
     "emotion_source",
     "transcript",
     "transcript_source",
@@ -111,6 +114,42 @@ PATH_EMOTION_HINTS = {
     "혐오": "disgust",
 }
 
+SKT_EMOTION_GUIDE = [
+    (1, 1, 20, "neutral", "뉴스, 나레이션 문의 낭독체"),
+    (2, 21, 30, "angry", "화난, 큰소리의"),
+    (3, 31, 40, "joy", "즐거운, 기쁜, 행복한"),
+    (4, 41, 50, "sad", "슬픈"),
+    (5, 51, 60, "serious", "단호한, 명령하듯 말하는"),
+    (6, 61, 70, "anxious", "걱정, 근심, 염려하는"),
+    (7, 71, 80, "kind", "상냥한, 친절한, 공손한"),
+    (8, 81, 90, "dry", "사무적인 톤의"),
+    (9, 91, 100, "tease", "심술부리듯, 비난하듯, 짜증내듯"),
+    (10, 101, 110, "doubt", "의심스러운 듯, 궁금한 듯"),
+    (11, 111, 120, "surprise", "깜짝 놀란듯"),
+    (12, 121, 130, "shy", "부끄러운듯"),
+    (13, 131, 140, "hurry", "몹시 서두르는 듯"),
+    (14, 141, 150, "fear", "무서운, 공포, 두려워하듯"),
+    (15, 151, 160, "hesitate", "머뭇거리듯, 당황한듯"),
+]
+
+SERVICE_EMOTION_MAP = {
+    "neutral": "normal",
+    "joy": "normal",
+    "kind": "normal",
+    "dry": "normal",
+    "doubt": "normal",
+    "shy": "normal",
+    "hesitate": "normal",
+    "sad": "frustrated",
+    "serious": "frustrated",
+    "anxious": "frustrated",
+    "surprise": "frustrated",
+    "hurry": "frustrated",
+    "fear": "frustrated",
+    "angry": "angry",
+    "tease": "angry",
+}
+
 
 def decode_text(raw: bytes) -> str:
     for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
@@ -137,6 +176,18 @@ def speaker_from_audio_path(path: str | Path) -> tuple[str, str]:
         return "", ""
     speaker_id = match.group(1).upper()
     return speaker_id, "female" if speaker_id.startswith("F") else "male"
+
+
+def infer_skt_emotion_from_audio_id(audio_id: str) -> tuple[str, str, str, str]:
+    match = re.search(r"_(\d{6})$", audio_id.lower())
+    if not match:
+        return "", "", "", ""
+    utterance_index = int(match.group(1))
+    sentence_index = ((utterance_index - 1) % 160) + 1
+    for emotion_index, start, end, emotion, detail in SKT_EMOTION_GUIDE:
+        if start <= sentence_index <= end:
+            return emotion, str(emotion_index), detail, SERVICE_EMOTION_MAP.get(emotion, "")
+    return "", "", "", ""
 
 
 def candidate_ids(value: str) -> set[str]:
@@ -512,14 +563,18 @@ def build_metadata_from_tar(
         audio_id = audio_id_from_path(Path(audio_path.split("!")[-1]))
         label = label_for_audio(label_index, audio_path)
         path_emotion, path_emotion_source = infer_emotion_from_path(Path(audio_path.replace("!", "/")))
+        skt_emotion, emotion_index, emotion_detail, service_emotion = infer_skt_emotion_from_audio_id(audio_id)
         speaker_id, speaker_gender = speaker_from_audio_path(audio_path)
         row = {
             "audio_id": audio_id,
             "audio_path": audio_path,
             "speaker_id": speaker_id,
             "speaker_gender": speaker_gender,
-            "emotion": label.get("emotion", path_emotion),
-            "emotion_source": label.get("emotion_source", path_emotion_source),
+            "emotion": label.get("emotion", skt_emotion or path_emotion),
+            "emotion_index": emotion_index,
+            "emotion_detail": emotion_detail,
+            "service_emotion": service_emotion,
+            "emotion_source": label.get("emotion_source", "skt_index" if skt_emotion else path_emotion_source),
             "transcript": label.get("transcript", ""),
             "transcript_source": label.get("transcript_source", ""),
         }
@@ -572,13 +627,17 @@ def build_metadata(
 
         path_emotion, path_emotion_source = infer_emotion_from_path(relative)
         speaker_id, speaker_gender = speaker_from_audio_path(relative)
+        skt_emotion, emotion_index, emotion_detail, service_emotion = infer_skt_emotion_from_audio_id(audio_id)
         row = {
             "audio_id": audio_id,
             "audio_path": str(relative),
             "speaker_id": speaker_id,
             "speaker_gender": speaker_gender,
-            "emotion": label.get("emotion", path_emotion),
-            "emotion_source": label.get("emotion_source", path_emotion_source),
+            "emotion": label.get("emotion", skt_emotion or path_emotion),
+            "emotion_index": emotion_index,
+            "emotion_detail": emotion_detail,
+            "service_emotion": service_emotion,
+            "emotion_source": label.get("emotion_source", "skt_index" if skt_emotion else path_emotion_source),
             "transcript": label.get("transcript", ""),
             "transcript_source": label.get("transcript_source", ""),
         }

@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from app.models import AudioFeatures, FeedbackContext
+from app.models import AudioFeatures, EmotionPrediction, FeedbackContext
 
 
 ANALYST_SYSTEM = """당신은 콜센터 상담사 보호 시스템의 실시간 발화 분석 엔진입니다.
@@ -28,6 +28,8 @@ emotion 판정:
 - 높은 피치, 큰 음량, 빠른 말속도만으로 sexual=true 또는 abusive=true로 판단하지 않는다.
 - 성희롱 여부는 발화 내용과 상담사 개인을 겨냥한 맥락이 명확할 때만 true로 판단한다.
 - 음향 값은 분노, 위협, 긴장도, 반복성 판단의 보조 신호로 사용한다.
+- emotionPrediction이 제공되면 실제 음성 감정 모델의 보조 판단으로만 사용한다.
+- emotionPrediction만으로 abusive=true 또는 sexual=true를 만들지 않는다.
 
 sexual 판정 기준:
 - sexual=true 이면 반드시 abusive=true도 함께 설정
@@ -61,6 +63,7 @@ def build_analysis_payload(
     text: str,
     audio_features: AudioFeatures | None = None,
     feedback_context: FeedbackContext | None = None,
+    emotion_prediction: EmotionPrediction | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "text": text,
@@ -74,4 +77,6 @@ def build_analysis_payload(
         payload["audioFeatures"] = audio_features.model_dump(exclude_none=True)
     if feedback_context:
         payload["feedbackContext"] = feedback_context.model_dump(exclude_none=True)
+    if emotion_prediction:
+        payload["emotionPrediction"] = emotion_prediction.model_dump(exclude_none=True)
     return json.dumps(payload, ensure_ascii=False)

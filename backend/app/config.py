@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     openai_transcription_model: str = "whisper-1"
     openai_max_tokens: int = 120
+    emotion_model_path: str = "data/skt/skt_emotion_model.json"
 
     model_config = SettingsConfigDict(env_file="backend/.env", env_file_encoding="utf-8")
 

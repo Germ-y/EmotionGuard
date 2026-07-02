@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.models import AnalysisResult, AnalyzeRequest, AnalyzeResponse, FeedbackContext
 from app.services.context_engine import classify_context
+from app.services.emotion_model import predict_emotion
 from app.services.local_classifier import (
     classify_local,
     mask_sensitive,
@@ -84,14 +85,15 @@ async def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
     local = classify_local(payload.text)
     needs_context = should_defer_abuse_to_context(payload.text)
     needs_feedback_context = _needs_feedback_context(payload.text, payload.feedbackContext, payload.raised)
+    emotion_prediction = predict_emotion(payload.audioFeatures)
     if payload.analysisMode == "immediate":
         analysis = local or (
-            await classify_context(payload.text, payload.audioFeatures, payload.feedbackContext)
+            await classify_context(payload.text, payload.audioFeatures, payload.feedbackContext, emotion_prediction)
             if needs_context or needs_feedback_context
             else normal_result()
         )
     else:
-        analysis = local or await classify_context(payload.text, payload.audioFeatures, payload.feedbackContext)
+        analysis = local or await classify_context(payload.text, payload.audioFeatures, payload.feedbackContext, emotion_prediction)
     analysis = _apply_feedback_prior(analysis, payload.feedbackContext)
 
     event_type = resolve_event_type(analysis, payload.raised)
@@ -109,4 +111,5 @@ async def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
         policyActions=policy_actions,
         audioFeatures=payload.audioFeatures,
         feedbackContext=payload.feedbackContext,
+        emotionPrediction=emotion_prediction,
     )
