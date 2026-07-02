@@ -1686,7 +1686,6 @@ export default function App() {
           markDemoPhase("mask");
           setInterimText("RMS 고성 감지 - 출력 커서에서 음성을 변조합니다.");
           setStatus("고성 기준 초과 음성 변조");
-          recordRaisedAudioEvent(nextFeatures);
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
