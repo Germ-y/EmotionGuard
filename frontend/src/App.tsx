@@ -2800,7 +2800,7 @@ export default function App() {
               <b>{pitchThreshold}Hz</b>
             </label>
             <div className="monitor-control">
-              <span>청취 모니터</span>
+              <span>청취</span>
               <button className={monitorEnabled ? "selected" : ""} onClick={() => setMonitorEnabled((prev) => !prev)}>
                 {monitorEnabled ? "켜짐" : "꺼짐"}
               </button>

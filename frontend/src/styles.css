@@ -562,8 +562,8 @@ button:hover { transform: translateY(-1px); }
 .guard-panel {
   order: 1;
   display: grid;
-  grid-template-columns: minmax(150px, 0.85fr) minmax(230px, 1.2fr) minmax(170px, 0.95fr) auto auto;
-  gap: 10px;
+  grid-template-columns: minmax(130px, 0.75fr) minmax(250px, 1.15fr) minmax(195px, 0.9fr) minmax(210px, 1fr) minmax(96px, 0.45fr);
+  gap: 8px;
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -599,6 +599,11 @@ button:hover { transform: translateY(-1px); }
 .threshold-control {
   min-width: 0;
 }
+.threshold-control > span,
+.monitor-control > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .threshold-heading {
   display: inline-flex;
   align-items: center;
@@ -616,7 +621,7 @@ button:hover { transform: translateY(-1px); }
   accent-color: #6d5dfc;
 }
 .threshold-control input {
-  min-width: 120px;
+  min-width: 84px;
   flex: 1;
 }
 .threshold-control input:disabled {
@@ -624,7 +629,7 @@ button:hover { transform: translateY(-1px); }
   opacity: 0.82;
 }
 .threshold-control b {
-  min-width: 42px;
+  min-width: 44px;
   color: var(--text);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
@@ -647,9 +652,10 @@ button:hover { transform: translateY(-1px); }
 }
 .monitor-control {
   justify-content: flex-end;
+  min-width: 0;
 }
 .pitch-control b {
-  min-width: 54px;
+  min-width: 58px;
 }
 input[type="range"] { accent-color: var(--blue); }
 .monitor-control button {
