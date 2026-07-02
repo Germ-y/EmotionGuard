@@ -132,7 +132,7 @@ button:hover { transform: translateY(-1px); }
 
 .process-strip {
   --process-line-y: 18px;
-  --process-step-y: 19px;
+  --process-step-y: 11px;
   --process-blue: 79, 125, 255;
   --process-blue-core: 235, 244, 255;
   position: relative;
