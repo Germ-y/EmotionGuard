@@ -1058,6 +1058,7 @@ export default function App() {
   const [reportArchive, setReportArchive] = useState<IncidentReport[]>(() => loadReportArchive());
   const [audioFeatures, setAudioFeatures] = useState<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
   const [emotionPrediction, setEmotionPrediction] = useState<EmotionPrediction | null>(null);
+  const [voiceModulating, setVoiceModulating] = useState(false);
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext>(() => initialFeedbackContext());
   const [latestDetection, setLatestDetection] = useState<LatestDetectionView | null>(null);
   const [voicemodStatus, setVoicemodStatus] = useState<VoicemodStatus>("disabled");
@@ -1174,15 +1175,18 @@ export default function App() {
       return [...dialogueEntries, ...liveEntry];
     }
 
-    const logEntries: ConversationEntry[] = timelineEntries.map((log) => ({
-      id: log.id,
-      timestamp: log.timestamp,
-      role: "고객",
-      text: maskVisibleText(log.maskedText),
-      detail: timelineDetailFor(log),
-      tone: log.eventType === "normal" ? "normal" : "risk",
-      eventType: log.eventType,
-    }));
+    const logEntries: ConversationEntry[] = timelineEntries.map((log) => {
+      const raisedOnly = log.eventType === "raised";
+      return {
+        id: log.id,
+        timestamp: log.timestamp,
+        role: "고객",
+        text: raisedOnly ? "고성 감지" : maskVisibleText(log.maskedText),
+        detail: raisedOnly ? "변조 적용 · 볼륨 완화" : timelineDetailFor(log),
+        tone: log.eventType === "normal" ? "normal" : "risk",
+        eventType: log.eventType,
+      };
+    });
     return [...logEntries, ...liveEntry];
   }, [active, demoDialogue, elapsed, liveTranscript, timelineEntries]);
 
@@ -1577,6 +1581,7 @@ export default function App() {
       if (t - featureUiTsRef.current > 220) {
         featureUiTsRef.current = t;
         setAudioFeatures(nextFeatures);
+        setVoiceModulating((prev) => (prev === voiceChangeActive ? prev : voiceChangeActive));
         if (!voiceActivity) setEmotionPrediction(null);
         const nextStatus = voiceChangeActive
           ? pitchProtection.pitchTriggered
@@ -2756,6 +2761,7 @@ export default function App() {
     reportLogsRef.current = [];
     setLatestDetection(null);
     setEmotionPrediction(null);
+    setVoiceModulating(false);
     setDemoDialogue([]);
     setLiveTranscript("");
     lastBrowserDictationRef.current = null;
@@ -2807,6 +2813,7 @@ export default function App() {
       voiceChangeUntilAtRef.current = 0;
       commandVoicemodVoiceChange(false, true);
       setActive(false);
+      setVoiceModulating(false);
       setError("마이크 권한이 필요합니다.");
     }
   }
@@ -2844,6 +2851,7 @@ export default function App() {
     setElapsed(finalElapsed);
     setLiveTranscript("");
     setEmotionPrediction(null);
+    setVoiceModulating(false);
     setLevel(0);
     setMuted(false);
     setStatus("대기 중");
@@ -2924,7 +2932,7 @@ export default function App() {
       <section className="grid">
         <div className="panel main">
           <div className="timer">{mm}:{ss}</div>
-          <section className="guard-panel">
+          <section className={`guard-panel ${voiceModulating ? "modulating" : ""}`}>
             <div className="guard-state">
               <strong>현재 보호 상태</strong>
               <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
@@ -2971,7 +2979,7 @@ export default function App() {
               </button>
             </div>
           </section>
-          <div className="meter">
+          <div className={`meter ${voiceModulating ? "modulating" : ""}`}>
             <label>RMS</label>
             <div className="track">
               <div className="fill" style={{ width: `${level}%` }} />
@@ -2979,8 +2987,9 @@ export default function App() {
             </div>
             <strong>{Math.round(level)}</strong>
           </div>
-          <section className={`acoustic-panel ${audioFeatures.voiceActivity ? "active" : ""}`}>
+          <section className={`acoustic-panel ${audioFeatures.voiceActivity ? "active" : ""} ${voiceModulating ? "modulating" : ""}`}>
             <div><span>입력 상태</span><strong>{audioFeatures.voiceActivity ? "발화 감지" : active ? "무음 대기" : "마이크 대기"}</strong></div>
+            <div className="modulation-cell"><span>변조</span><strong>{voiceModulating ? "적용 중" : "대기"}</strong></div>
             <div><span>감정</span><strong>{emotionPredictionValue(emotionPrediction, audioFeatures.voiceActivity)}</strong></div>
             <div><span>Pitch</span><strong>{featureValue(audioFeatures.pitchHz, "Hz", audioFeatures.voiceActivity)}</strong></div>
             <div><span>Peak</span><strong>{featureValue(audioFeatures.peak, "", audioFeatures.voiceActivity)}</strong></div>
