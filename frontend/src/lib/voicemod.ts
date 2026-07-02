@@ -97,13 +97,21 @@ export class VoicemodClient {
 
     this.desiredVoiceChange = enabled;
     const nextVoice = enabled ? this.resolveVoiceId() : NOFX_VOICE_ID;
-    if (this.requestedVoice === nextVoice && this.socket?.readyState === WebSocket.OPEN && this.authorized) return true;
+    if (
+      enabled &&
+      this.requestedVoice === nextVoice &&
+      this.socket?.readyState === WebSocket.OPEN &&
+      this.authorized
+    ) {
+      return true;
+    }
 
     const connected = await this.connect();
     if (!connected) return false;
 
     this.requestedVoice = nextVoice;
     this.send("loadVoice", { voiceID: nextVoice });
+    if (!enabled) this.disableVoiceChanger();
     this.onStatus?.(this.authorized ? (enabled ? "active" : "ready") : "pending");
     return true;
   }
@@ -192,7 +200,8 @@ export class VoicemodClient {
       this.pending.push({ action, payload });
       return;
     }
-    if (action === "loadVoice" && this.authorized && this.voiceChangerEnabled === false) {
+    const voiceID = typeof payload.voiceID === "string" ? payload.voiceID : "";
+    if (action === "loadVoice" && this.authorized && this.voiceChangerEnabled === false && !isNoEffectVoice(voiceID)) {
       this.socket.send(JSON.stringify({ id: requestId(), action: "toggleVoiceChanger", payload: {} }));
       this.voiceChangerEnabled = true;
     }
@@ -217,6 +226,12 @@ export class VoicemodClient {
     if (strongCandidate?.id) return strongCandidate.id;
 
     return this.voices.find((voice) => voice.enabled !== false && voice.id && voice.id !== NOFX_VOICE_ID)?.id || this.voiceId;
+  }
+
+  private disableVoiceChanger() {
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.authorized || this.voiceChangerEnabled !== true) return;
+    this.socket.send(JSON.stringify({ id: requestId(), action: "toggleVoiceChanger", payload: {} }));
+    this.voiceChangerEnabled = false;
   }
 
   private handleMessage(event: MessageEvent) {
@@ -250,6 +265,7 @@ export class VoicemodClient {
       if (message.actionType === "voiceChangerEnabledEvent") this.voiceChangerEnabled = true;
       else if (message.actionType === "voiceChangerDisabledEvent") this.voiceChangerEnabled = false;
       else if (typeof message.actionObject?.value === "boolean") this.voiceChangerEnabled = message.actionObject.value;
+      if (!this.desiredVoiceChange) this.disableVoiceChanger();
       return;
     }
 

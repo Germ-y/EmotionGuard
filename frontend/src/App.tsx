@@ -131,6 +131,7 @@ const CFG = {
   liveChunkMinPeak: 0.002,
   liveChunkProbeEveryMs: 2800,
   normalRepeatDedupeMs: 10000,
+  raisedAudioLogDedupeMs: 3500,
   autoThresholdWarmupMs: 5000,
   autoThresholdMin: 32,
   autoThresholdMax: 72,
@@ -1109,6 +1110,7 @@ export default function App() {
   const voiceChangeUntilAtRef = useRef(0);
   const lastVoicemodActiveRef = useRef(false);
   const lastVoicemodAttemptAtRef = useRef(0);
+  const lastRaisedAudioLogAtRef = useRef(0);
 
   const audioRef = useRef<{
     stream?: MediaStream;
@@ -1246,6 +1248,37 @@ export default function App() {
     } finally {
       emotionPredictRef.current.inFlight = false;
     }
+  }
+
+  function recordRaisedAudioEvent(features: AudioFeatures, trigger: "level" | "pitch") {
+    const nowMs = Date.now();
+    if (nowMs - lastRaisedAudioLogAtRef.current < CFG.raisedAudioLogDedupeMs) return;
+    lastRaisedAudioLogAtRef.current = nowMs;
+
+    const text = trigger === "pitch" ? "피치 기준 초과 음성 구간" : "고성 음성 구간";
+    const result: AnalyzeResponse = {
+      abusive: false,
+      severity: "mild",
+      categories: trigger === "pitch" ? ["pitch_spike", "raised_voice"] : ["raised_voice"],
+      emotion: "angry",
+      sexual: false,
+      source: "fallback",
+      triggeredWords: [],
+      raised: true,
+      eventType: "raised",
+      maskedText: text,
+      detectionPath: "immediate",
+      contextWindowMs: CFG.contextWindowMs,
+      policyActions: ["pitch_shift", "volume_reduce", "warn_tts", "escalate", "report"],
+      audioFeatures: features,
+      feedbackContext: feedbackSnapshot(features),
+      emotionPrediction,
+    };
+
+    applyPolicy(result, text, {
+      startedAtMs: performance.now(),
+      resultAtMs: performance.now(),
+    });
   }
 
   function dictationPrompt() {
@@ -1425,20 +1458,12 @@ export default function App() {
     source.connect(dryDelay);
     dryDelay.connect(dryGain);
     dryGain.connect(loudnessGain);
-    dryDelay.connect(voiceChangeFilter);
-    voiceChangeFilter.connect(voiceChangeShaper);
-    voiceChangeShaper.connect(modulationGain);
-    modulationGain.connect(voiceChangeGain);
-    voiceChangeGain.connect(loudnessGain);
     source.connect(jungle.input);
     jungle.output.connect(processedDelay);
-    modulationCarrier.connect(modulationCarrierGain);
-    modulationCarrierGain.connect(modulationGain.gain);
     processedDelay.connect(processedGain);
     processedGain.connect(loudnessGain);
     loudnessGain.connect(outGain);
     outGain.connect(ctx.destination);
-    modulationCarrier.start();
 
     audioRef.current = {
       ...audioRef.current,
@@ -1555,14 +1580,14 @@ export default function App() {
 
       current.jungle.setPitchOffset(offset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const processedMix = voiceChangeActive ? 0 : offset < 0 ? 0.85 : 0;
-        current.dryGain.gain.setTargetAtTime(voiceChangeActive ? 0 : 1 - processedMix, current.ctx.currentTime, 0.025);
+        const processedMix = 0;
+        current.dryGain.gain.setTargetAtTime(1, current.ctx.currentTime, 0.025);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
       if (current.voiceChangeGain && current.modulationGain && current.modulationCarrierGain && current.ctx) {
-        current.voiceChangeGain.gain.setTargetAtTime(voiceChangeActive ? 1.08 : 0, current.ctx.currentTime, 0.02);
-        current.modulationGain.gain.setTargetAtTime(voiceChangeActive ? 0.06 : 1, current.ctx.currentTime, 0.02);
-        current.modulationCarrierGain.gain.setTargetAtTime(voiceChangeActive ? 0.92 : 0, current.ctx.currentTime, 0.02);
+        current.voiceChangeGain.gain.setTargetAtTime(0, current.ctx.currentTime, 0.02);
+        current.modulationGain.gain.setTargetAtTime(1, current.ctx.currentTime, 0.02);
+        current.modulationCarrierGain.gain.setTargetAtTime(0, current.ctx.currentTime, 0.02);
       }
       commandVoicemodVoiceChange(voiceChangeActive);
       if (current.loudnessGain && current.ctx) {
@@ -1580,6 +1605,7 @@ export default function App() {
             ? "피치 기준 초과 감지 - 출력 커서에서 음성을 변조합니다."
             : "RMS 고성 감지 - 출력 커서에서 음성을 변조합니다.");
           setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 음성 변조" : "고성 기준 초과 음성 변조");
+          recordRaisedAudioEvent(nextFeatures, pitchProtection.pitchTriggered ? "pitch" : "level");
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
