@@ -562,7 +562,7 @@ button:hover { transform: translateY(-1px); }
 .guard-panel {
   order: 1;
   display: grid;
-  grid-template-columns: minmax(150px, 0.9fr) minmax(170px, 1fr) minmax(170px, 1fr) auto auto;
+  grid-template-columns: minmax(150px, 0.85fr) minmax(230px, 1.2fr) minmax(170px, 0.95fr) auto auto;
   gap: 10px;
   align-items: center;
   border: 1px solid var(--line);
@@ -607,12 +607,30 @@ button:hover { transform: translateY(-1px); }
   min-width: 120px;
   flex: 1;
 }
+.threshold-control input:disabled {
+  cursor: default;
+  opacity: 0.82;
+}
 .threshold-control b {
   min-width: 42px;
   color: var(--text);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+.mode-chip {
+  border: 1px solid var(--line-strong);
+  background: white;
+  color: var(--muted);
+  padding: 6px 9px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.mode-chip.selected {
+  border-color: rgba(79, 70, 229, 0.34);
+  background: #eef2ff;
+  color: var(--blue);
 }
 .voice-control,
 .monitor-control {

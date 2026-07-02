@@ -66,6 +66,13 @@ type LatestDetectionView = {
   original: string;
 };
 
+type AutoThresholdBaseline = {
+  startedAtMs: number;
+  levels: number[];
+  voiceLevels: number[];
+  lastUpdateMs: number;
+};
+
 type EscalationState = {
   abuse: number;
   sexual: number;
@@ -114,6 +121,11 @@ const CFG = {
   liveChunkMinPeak: 0.002,
   liveChunkProbeEveryMs: 2800,
   normalRepeatDedupeMs: 10000,
+  autoThresholdWarmupMs: 5000,
+  autoThresholdMin: 32,
+  autoThresholdMax: 72,
+  autoThresholdSampleLimit: 360,
+  autoThresholdUpdateMs: 450,
   warningMessages: [
     "폭언을 하시면 정상적인 상담이 어렵습니다. 폭언을 중단해 주십시오.",
     "고객님, 마음을 가라앉히시고 차분히 말씀해 주셔야 도움을 드릴 수 있습니다.",
@@ -250,6 +262,34 @@ function loudnessGainForLevel(level: number, threshold: number, strength: number
   const maxReduction = 0.18 + ratio * 0.38;
   const reduction = startReduction + (maxReduction - startReduction) * over;
   return clamp(1 - reduction, 1 - maxReduction, 1 - startReduction);
+}
+
+function createAutoThresholdBaseline(startedAtMs = 0): AutoThresholdBaseline {
+  return { startedAtMs, levels: [], voiceLevels: [], lastUpdateMs: 0 };
+}
+
+function pushRollingSample(samples: number[], value: number) {
+  samples.push(value);
+  if (samples.length > CFG.autoThresholdSampleLimit) samples.shift();
+}
+
+function percentile(sortedValues: number[], ratio: number) {
+  if (sortedValues.length === 0) return 0;
+  const index = clamp(Math.floor((sortedValues.length - 1) * ratio), 0, sortedValues.length - 1);
+  return sortedValues[index] ?? 0;
+}
+
+function computeAutoThreshold(baseline: AutoThresholdBaseline, fallback: number) {
+  if (baseline.voiceLevels.length < 8) return fallback;
+  const samples = baseline.voiceLevels;
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  const average = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  const p75 = percentile(sorted, 0.75);
+  const ambientSorted = [...baseline.levels].sort((a, b) => a - b);
+  const ambientP95 = percentile(ambientSorted, 0.95);
+  const target = Math.max(ambientP95 + 18, average * 1.45 + 14, p75 + 10, CFG.autoThresholdMin);
+  return Math.round(clamp(target, CFG.autoThresholdMin, CFG.autoThresholdMax));
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -933,6 +973,8 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [threshold, setThreshold] = useState(42);
+  const [autoThreshold, setAutoThreshold] = useState(42);
+  const [autoThresholdEnabled, setAutoThresholdEnabled] = useState(true);
   const [attenuationStrength, setAttenuationStrength] = useState(65);
   const [gender, setGender] = useState<"male" | "female">("male");
   const [monitorEnabled, setMonitorEnabled] = useState(true);
@@ -974,6 +1016,12 @@ export default function App() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const audioFeaturesRef = useRef<AudioFeatures>({ rms: 0, rmsPercent: 0, peak: 0, zeroCrossingRate: 0, voiceActivity: false });
   const featureUiTsRef = useRef(0);
+  const thresholdRef = useRef(42);
+  const autoThresholdRef = useRef(42);
+  const autoThresholdEnabledRef = useRef(true);
+  const autoBaselineRef = useRef<AutoThresholdBaseline>(createAutoThresholdBaseline());
+  const attenuationStrengthRef = useRef(65);
+  const genderRef = useRef<"male" | "female">("male");
   const browserDictationRef = useRef(false);
   const lastBrowserDictationRef = useRef<{ text: string; at: number } | null>(null);
   const demoAudioRef = useRef<{
@@ -1066,6 +1114,7 @@ export default function App() {
   const litPhaseSet = useMemo(() => new Set(litPhases), [litPhases]);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
+  const effectiveThreshold = autoThresholdEnabled ? autoThreshold : threshold;
   const normalizedRoute = routePath.replace(/\/$/, "") || "/";
 
   function navigate(path: string) {
@@ -1113,6 +1162,26 @@ export default function App() {
     setDemoPhase(phase);
     if (phase === "idle") return;
     setLitPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]));
+  }
+
+  function resetAutoThresholdLearning(seed = thresholdRef.current) {
+    autoBaselineRef.current = createAutoThresholdBaseline(performance.now());
+    autoThresholdRef.current = seed;
+    setAutoThreshold(seed);
+  }
+
+  function toggleAutoThresholdMode() {
+    if (autoThresholdEnabledRef.current) {
+      thresholdRef.current = autoThresholdRef.current;
+      autoThresholdEnabledRef.current = false;
+      setThreshold(autoThresholdRef.current);
+      setAutoThresholdEnabled(false);
+      return;
+    }
+
+    autoThresholdEnabledRef.current = true;
+    resetAutoThresholdLearning(thresholdRef.current);
+    setAutoThresholdEnabled(true);
   }
 
   function pushDemoDialogue(
@@ -1182,6 +1251,26 @@ export default function App() {
     window.addEventListener("popstate", syncRoute);
     return () => window.removeEventListener("popstate", syncRoute);
   }, []);
+
+  useEffect(() => {
+    thresholdRef.current = threshold;
+  }, [threshold]);
+
+  useEffect(() => {
+    autoThresholdRef.current = autoThreshold;
+  }, [autoThreshold]);
+
+  useEffect(() => {
+    autoThresholdEnabledRef.current = autoThresholdEnabled;
+  }, [autoThresholdEnabled]);
+
+  useEffect(() => {
+    attenuationStrengthRef.current = attenuationStrength;
+  }, [attenuationStrength]);
+
+  useEffect(() => {
+    genderRef.current = gender;
+  }, [gender]);
 
   useEffect(() => {
     const { ctx, outGain } = audioRef.current;
@@ -1257,7 +1346,30 @@ export default function App() {
       const rawVoiceActivity = nextLevel >= CFG.voiceLevelThreshold || peak >= CFG.voicePeakThreshold;
       if (rawVoiceActivity) current.lastVoiceActivityTs = Date.now();
       const voiceActivity = rawVoiceActivity || Date.now() - (current.lastVoiceActivityTs ?? 0) < CFG.voiceHoldMs;
-      const offset = pitchOffsetForLevel(nextLevel, threshold, gender);
+      if (autoThresholdEnabledRef.current) {
+        const baseline = autoBaselineRef.current;
+        if (!baseline.startedAtMs) baseline.startedAtMs = t;
+        if (nextLevel <= CFG.autoThresholdMax + 8) {
+          pushRollingSample(baseline.levels, nextLevel);
+          if (rawVoiceActivity && nextLevel >= 1) pushRollingSample(baseline.voiceLevels, nextLevel);
+        }
+
+        if (t - baseline.lastUpdateMs >= CFG.autoThresholdUpdateMs) {
+          const nextAutoThreshold = computeAutoThreshold(baseline, autoThresholdRef.current);
+          const warmup = t - baseline.startedAtMs < CFG.autoThresholdWarmupMs;
+          const smoothed = warmup
+            ? nextAutoThreshold
+            : Math.round(autoThresholdRef.current * 0.85 + nextAutoThreshold * 0.15);
+          if (Math.abs(smoothed - autoThresholdRef.current) >= 1) {
+            autoThresholdRef.current = smoothed;
+            setAutoThreshold(smoothed);
+          }
+          baseline.lastUpdateMs = t;
+        }
+      }
+
+      const activeThreshold = autoThresholdEnabledRef.current ? autoThresholdRef.current : thresholdRef.current;
+      const offset = pitchOffsetForLevel(nextLevel, activeThreshold, genderRef.current);
       const nextFeatures: AudioFeatures = {
         rms: rounded(rms, 4),
         rmsPercent: rounded(nextLevel, 1),
@@ -1297,10 +1409,10 @@ export default function App() {
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.04);
       }
       if (current.loudnessGain && current.ctx) {
-        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, threshold, attenuationStrength), current.ctx.currentTime, 0.05);
+        current.loudnessGain.gain.setTargetAtTime(loudnessGainForLevel(nextLevel, activeThreshold, attenuationStrengthRef.current), current.ctx.currentTime, 0.05);
       }
 
-      if (!announcingRef.current && nextLevel >= threshold) {
+      if (!announcingRef.current && nextLevel >= activeThreshold) {
         current.raisedSustainMs += dt;
         if (current.raisedSustainMs >= CFG.raisedSustainMs && !current.raisedLatched) {
           current.raisedLatched = true;
@@ -1310,7 +1422,7 @@ export default function App() {
           setInterimText("RMS 고성 분석 감지 - 출력 커서에서 음정을 낮춰 전달합니다.");
           setStatus("고성 구간 피치/볼륨 완화");
         }
-      } else if (nextLevel < threshold * 0.8) {
+      } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
         current.raisedLatched = false;
       }
@@ -2455,6 +2567,7 @@ export default function App() {
     setFeedbackContext(feedbackContextRef.current);
     lastContextSnapshotRef.current = "";
     emotionPredictRef.current = { inFlight: false, lastAt: 0 };
+    resetAutoThresholdLearning(thresholdRef.current);
     seenEventRef.current.clear();
     lastBeepRef.current = null;
     lastFeedbackRef.current = null;
@@ -2608,11 +2721,25 @@ export default function App() {
               <strong>현재 보호 상태</strong>
               <span>{muted ? "욕설 구간 삐 처리 중" : status}</span>
             </div>
-            <label className="threshold-control">
+            <div className={`threshold-control ${autoThresholdEnabled ? "auto" : ""}`}>
               <span>고성 기준</span>
-              <input type="range" min={20} max={80} value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
-              <b>{threshold}%</b>
-            </label>
+              <input
+                type="range"
+                min={20}
+                max={80}
+                value={effectiveThreshold}
+                disabled={autoThresholdEnabled}
+                onChange={(event) => setThreshold(Number(event.target.value))}
+              />
+              <b>{effectiveThreshold}%</b>
+              <button
+                type="button"
+                className={`mode-chip ${autoThresholdEnabled ? "selected" : ""}`}
+                onClick={toggleAutoThresholdMode}
+              >
+                {autoThresholdEnabled ? "자동" : "수동"}
+              </button>
+            </div>
             <label className="threshold-control attenuation-control">
               <span>완화 강도</span>
               <input type="range" min={0} max={100} value={attenuationStrength} onChange={(event) => setAttenuationStrength(Number(event.target.value))} />
@@ -2636,7 +2763,7 @@ export default function App() {
             <label>RMS</label>
             <div className="track">
               <div className="fill" style={{ width: `${level}%` }} />
-              <i style={{ left: `${threshold}%` }} />
+              <i style={{ left: `${effectiveThreshold}%` }} />
             </div>
             <strong>{Math.round(level)}</strong>
           </div>
