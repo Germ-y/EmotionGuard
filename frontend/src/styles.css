@@ -199,20 +199,20 @@ button:hover { transform: translateY(-1px); }
   background: transparent;
 }
 .process-step.done::before {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   top: var(--process-step-y);
   background: rgba(var(--process-blue), 0.9);
   box-shadow:
-    0 0 8px rgba(var(--process-blue), 0.62),
-    0 0 18px rgba(var(--process-blue), 0.32);
+    0 0 6px rgba(var(--process-blue), 0.56),
+    0 0 12px rgba(var(--process-blue), 0.26);
 }
 .process-step.done::after {
-  width: 44px;
+  width: 34px;
   height: 34px;
   background:
-    radial-gradient(ellipse at center, rgba(var(--process-blue), 0.38) 0 16%, rgba(var(--process-blue), 0.22) 42%, transparent 78%);
-  filter: blur(8px);
+    radial-gradient(circle at center, transparent 0 34%, rgba(var(--process-blue), 0.28) 43%, rgba(var(--process-blue), 0.16) 56%, transparent 74%);
+  filter: blur(2px);
   box-shadow: none;
 }
 .process-step.active {
@@ -220,21 +220,20 @@ button:hover { transform: translateY(-1px); }
   box-shadow: none;
 }
 .process-step.active::before {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   top: var(--process-step-y);
   background: rgba(var(--process-blue), 0.98);
   box-shadow:
-    0 0 9px rgba(var(--process-blue), 0.72),
-    0 0 20px rgba(var(--process-blue), 0.48),
-    0 0 32px rgba(var(--process-blue), 0.22);
+    0 0 7px rgba(var(--process-blue), 0.7),
+    0 0 16px rgba(var(--process-blue), 0.36);
 }
 .process-step.active::after {
-  width: 58px;
+  width: 44px;
   height: 44px;
   background:
-    radial-gradient(ellipse at center, rgba(var(--process-blue), 0.48) 0 14%, rgba(var(--process-blue), 0.28) 40%, rgba(var(--process-blue), 0.08) 66%, transparent 84%);
-  filter: blur(10px);
+    radial-gradient(circle at center, transparent 0 30%, rgba(var(--process-blue), 0.44) 40%, rgba(var(--process-blue), 0.22) 56%, rgba(var(--process-blue), 0.08) 68%, transparent 80%);
+  filter: blur(2.5px);
   box-shadow: none;
   animation: processPulse 1.9s ease-out infinite;
 }
