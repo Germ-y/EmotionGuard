@@ -229,16 +229,32 @@ data/kemdy20/kemdy20_metadata.csv
 
 ### SKT 음성 감정 데이터
 
-현재 `SKT데이터/`는 원본 대용량 데이터 보관 위치이며 `.gitignore` 대상이다. small 데이터가 완성본으로 들어오면 압축을 푼 뒤 아래 명령으로 감정 분석용 CSV를 만든다.
+`small.tar`는 git에 커밋하지 않는 원본 대용량 데이터이며 `.gitignore` 대상이다. 현재 스크립트는 `small.tar` 내부의 중첩 tar를 직접 스트리밍으로 읽어 음향 메타데이터 CSV를 만들 수 있다.
+
+빠른 샘플 확인:
 
 ```powershell
-python scripts\extract_skt_emotion_metadata.py .\SKT데이터\extracted --output data\skt\skt_emotion_metadata.csv
+python scripts\extract_skt_emotion_metadata.py .\small.tar --limit 20 --output data\skt\skt_emotion_metadata_sample.csv
+```
+
+전체 메타데이터 생성:
+
+```powershell
+python scripts\extract_skt_emotion_metadata.py .\small.tar --output data\skt\skt_emotion_metadata.csv
+```
+
+라벨 CSV/JSON이 별도 폴더에 있을 경우 `--labels`로 함께 넘긴다.
+
+```powershell
+python scripts\extract_skt_emotion_metadata.py .\small.tar --labels .\SKT데이터\labels --output data\skt\skt_emotion_metadata.csv
 ```
 
 현재 스크립트가 추출하는 주요 컬럼:
 
 - `audio_id`
 - `audio_path`
+- `speaker_id`
+- `speaker_gender`
 - `emotion`
 - `transcript`
 - `duration_s`

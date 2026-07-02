@@ -18,6 +18,8 @@ ARCHIVE_FRAGMENT_PATTERNS = (".tar.irx", ".irx")
 BASE_COLUMNS = [
     "audio_id",
     "audio_path",
+    "speaker_id",
+    "speaker_gender",
     "emotion",
     "emotion_source",
     "transcript",
@@ -126,6 +128,15 @@ def normalize_key(value: str) -> str:
 
 def audio_id_from_path(path: Path) -> str:
     return path.stem.strip().lower()
+
+
+def speaker_from_audio_path(path: str | Path) -> tuple[str, str]:
+    normalized = str(path).replace("\\", "/")
+    match = re.search(r"(?:^|/)([FM]\d{4})(?:[_/]|$)", normalized, flags=re.IGNORECASE)
+    if not match:
+        return "", ""
+    speaker_id = match.group(1).upper()
+    return speaker_id, "female" if speaker_id.startswith("F") else "male"
 
 
 def candidate_ids(value: str) -> set[str]:
@@ -315,20 +326,41 @@ def estimate_pitch(samples: list[float], sample_rate: int) -> tuple[str, str]:
     if np is None or not samples or sample_rate <= 0:
         return "", ""
 
-    window = np.array(samples[: min(len(samples), int(sample_rate * 0.8))], dtype=float)
-    if window.size < int(sample_rate * 0.08):
+    stride = max(1, round(sample_rate / 16000))
+    effective_rate = sample_rate / stride
+    signal = np.array(samples[: min(len(samples), int(sample_rate * 3.0)) : stride], dtype=float)
+    if signal.size == 0:
+        return "", ""
+
+    frame_size = max(1, int(effective_rate * 0.04))
+    hop_size = max(1, frame_size // 2)
+    if signal.size > frame_size:
+        frame_starts = range(0, signal.size - frame_size + 1, hop_size)
+        best_start = max(frame_starts, key=lambda start: float((signal[start : start + frame_size] ** 2).mean()))
+        center = best_start + frame_size // 2
+        window_size = max(frame_size * 2, int(effective_rate * 0.36))
+        start = max(0, center - window_size // 2)
+        end = min(signal.size, start + window_size)
+        start = max(0, end - window_size)
+        window = signal[start:end]
+    else:
+        window = signal
+
+    if window.size < int(effective_rate * 0.08):
         return "", ""
     window = window - window.mean()
     rms = math.sqrt(float((window * window).mean()))
     if rms < 0.006:
         return "", ""
 
-    min_lag = max(1, int(sample_rate / 420))
-    max_lag = min(window.size - 1, int(sample_rate / 70))
+    min_lag = max(1, int(effective_rate / 420))
+    max_lag = min(window.size - 1, int(effective_rate / 70))
     if max_lag <= min_lag:
         return "", ""
 
-    correlations = np.correlate(window, window, mode="full")[window.size - 1 :]
+    fft_size = 1 << (2 * window.size - 1).bit_length()
+    spectrum = np.fft.rfft(window, fft_size)
+    correlations = np.fft.irfft(spectrum * np.conjugate(spectrum), fft_size)[: window.size]
     search = correlations[min_lag:max_lag]
     if search.size == 0:
         return "", ""
@@ -336,13 +368,47 @@ def estimate_pitch(samples: list[float], sample_rate: int) -> tuple[str, str]:
     best_offset = int(search.argmax())
     best_lag = min_lag + best_offset
     confidence = float(search[best_offset] / max(correlations[0], 1e-9))
-    if confidence < 0.15:
+    if confidence < 0.08:
         return "", f"{confidence:.4f}"
-    return f"{sample_rate / best_lag:.4f}", f"{min(1.0, confidence):.4f}"
+    return f"{effective_rate / best_lag:.4f}", f"{min(1.0, confidence):.4f}"
 
 
 def audio_features_from_wav(path: Path) -> dict[str, str]:
     with wave.open(str(path), "rb") as wav:
+        channels = wav.getnchannels()
+        sample_rate = wav.getframerate()
+        sample_width = wav.getsampwidth()
+        frame_count = wav.getnframes()
+        raw = wav.readframes(frame_count)
+
+    samples = mono_samples(pcm_samples(raw, sample_width), channels)
+    if not samples:
+        return {}
+
+    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    peak = max(abs(sample) for sample in samples)
+    crossings = sum(
+        1
+        for index in range(1, len(samples))
+        if (samples[index - 1] >= 0 > samples[index]) or (samples[index - 1] < 0 <= samples[index])
+    )
+    pitch_hz, pitch_confidence = estimate_pitch(samples, sample_rate)
+
+    return {
+        "duration_s": f"{frame_count / sample_rate:.4f}" if sample_rate else "",
+        "sample_rate": str(sample_rate),
+        "channels": str(channels),
+        "audio_rms": f"{rms:.6g}",
+        "audio_peak": f"{peak:.6g}",
+        "audio_zero_crossing_rate": f"{crossings / max(1, len(samples) - 1):.6g}",
+        "spectral_centroid_hz": spectral_centroid(samples, sample_rate),
+        "pitch_hz": pitch_hz,
+        "pitch_confidence": pitch_confidence,
+    }
+
+
+def audio_features_from_wav_bytes(raw_wav: bytes) -> dict[str, str]:
+    with wave.open(io.BytesIO(raw_wav), "rb") as wav:
         channels = wav.getnchannels()
         sample_rate = wav.getframerate()
         sample_width = wav.getsampwidth()
@@ -384,8 +450,114 @@ def infer_emotion_from_path(path: Path) -> tuple[str, str]:
     return "", ""
 
 
-def build_metadata(source: Path, limit: int | None = None) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    label_index = build_label_index(source)
+def label_for_audio(label_index: dict[str, dict[str, str]], audio_path: str | Path) -> dict[str, str]:
+    path = Path(str(audio_path).replace("\\", "/"))
+    for key in candidate_ids(path.name) | candidate_ids(path.stem) | candidate_ids(str(path)):
+        if key in label_index:
+            return label_index[key]
+    return {}
+
+
+def iter_nested_tar_wavs(source: Path, limit: int | None = None) -> Iterable[tuple[str, bytes]]:
+    yielded = 0
+    with tarfile.open(source, "r") as outer:
+        for outer_member in outer:
+            if not outer_member.isfile():
+                continue
+            outer_name = outer_member.name
+            lower_outer_name = outer_name.lower()
+
+            if Path(lower_outer_name).suffix in AUDIO_EXTENSIONS:
+                outer_file = outer.extractfile(outer_member)
+                if outer_file is None:
+                    continue
+                yield outer_name, outer_file.read()
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+                continue
+
+            if not lower_outer_name.endswith(".tar"):
+                continue
+
+            outer_file = outer.extractfile(outer_member)
+            if outer_file is None:
+                continue
+
+            with tarfile.open(fileobj=outer_file, mode="r|") as inner:
+                for inner_member in inner:
+                    if not inner_member.isfile() or Path(inner_member.name).suffix.lower() not in AUDIO_EXTENSIONS:
+                        continue
+                    inner_file = inner.extractfile(inner_member)
+                    if inner_file is None:
+                        continue
+                    yield f"{outer_name}!{inner_member.name}", inner_file.read()
+                    yielded += 1
+                    if limit is not None and yielded >= limit:
+                        return
+
+
+def build_metadata_from_tar(
+    source: Path,
+    label_index: dict[str, dict[str, str]],
+    limit: int | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    rows = []
+    errors = []
+
+    with tarfile.open(source, "r") as outer:
+        outer_files = [member for member in outer.getmembers() if member.isfile()]
+
+    for audio_path, raw_wav in iter_nested_tar_wavs(source, limit):
+        audio_id = audio_id_from_path(Path(audio_path.split("!")[-1]))
+        label = label_for_audio(label_index, audio_path)
+        path_emotion, path_emotion_source = infer_emotion_from_path(Path(audio_path.replace("!", "/")))
+        speaker_id, speaker_gender = speaker_from_audio_path(audio_path)
+        row = {
+            "audio_id": audio_id,
+            "audio_path": audio_path,
+            "speaker_id": speaker_id,
+            "speaker_gender": speaker_gender,
+            "emotion": label.get("emotion", path_emotion),
+            "emotion_source": label.get("emotion_source", path_emotion_source),
+            "transcript": label.get("transcript", ""),
+            "transcript_source": label.get("transcript_source", ""),
+        }
+        try:
+            row.update(audio_features_from_wav_bytes(raw_wav))
+        except (wave.Error, EOFError, OSError) as exc:
+            row["error"] = str(exc)
+            errors.append({"audio_path": audio_path, "error": str(exc)})
+        rows.append(row)
+
+    summary = {
+        "source": str(source),
+        "source_type": "tar",
+        "outer_files": len(outer_files),
+        "outer_tar_files": sum(1 for member in outer_files if member.name.lower().endswith(".tar")),
+        "label_keys": len(label_index),
+        "rows": len(rows),
+        "rows_with_emotion": sum(1 for row in rows if row.get("emotion")),
+        "rows_with_transcript": sum(1 for row in rows if row.get("transcript")),
+        "rows_with_pitch": sum(1 for row in rows if row.get("pitch_hz")),
+        "rows_with_speaker_gender": sum(1 for row in rows if row.get("speaker_gender")),
+        "limited": limit is not None,
+        "errors": errors[:20],
+    }
+    if not rows:
+        summary["status"] = "empty"
+        summary["message"] = "No wav files found in tar or nested tar files."
+    if rows and not summary["rows_with_emotion"]:
+        summary["label_note"] = "No emotion labels matched. This tar appears to contain wav audio only; pass --labels if labels are stored separately."
+    return rows, summary
+
+
+def build_metadata(
+    source: Path,
+    limit: int | None = None,
+    extra_label_index: dict[str, dict[str, str]] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    label_index = {**build_label_index(source), **(extra_label_index or {})}
     audio_paths = sorted(path for path in source.rglob("*") if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS)
     rows = []
 
@@ -399,9 +571,12 @@ def build_metadata(source: Path, limit: int | None = None) -> tuple[list[dict[st
                 break
 
         path_emotion, path_emotion_source = infer_emotion_from_path(relative)
+        speaker_id, speaker_gender = speaker_from_audio_path(relative)
         row = {
             "audio_id": audio_id,
             "audio_path": str(relative),
+            "speaker_id": speaker_id,
+            "speaker_gender": speaker_gender,
             "emotion": label.get("emotion", path_emotion),
             "emotion_source": label.get("emotion_source", path_emotion_source),
             "transcript": label.get("transcript", ""),
@@ -429,6 +604,19 @@ def build_metadata(source: Path, limit: int | None = None) -> tuple[list[dict[st
     return rows, summary
 
 
+def build_metadata_for_source(source: Path, limit: int | None = None, label_sources: list[Path] | None = None) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    label_sources = label_sources or []
+    label_index: dict[str, dict[str, str]] = {}
+    for label_source in label_sources:
+        if label_source.is_dir():
+            label_index.update(build_label_index(label_source))
+
+    if source.is_file() and source.suffix.lower() == ".tar":
+        return build_metadata_from_tar(source, label_index, limit)
+
+    return build_metadata(source, limit, label_index)
+
+
 def write_csv(rows: list[dict[str, str]], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     extra_columns = sorted({key for row in rows for key in row if key not in BASE_COLUMNS})
@@ -440,17 +628,18 @@ def write_csv(rows: list[dict[str, str]], output: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extract SKT speech emotion metadata from an extracted dataset folder.")
-    parser.add_argument("source", help="Extracted SKT dataset folder")
+    parser = argparse.ArgumentParser(description="Extract SKT speech emotion metadata from an extracted dataset folder or small.tar.")
+    parser.add_argument("source", help="Extracted SKT dataset folder or completed nested tar such as small.tar")
     parser.add_argument("--output", default="data/skt/skt_emotion_metadata.csv")
     parser.add_argument("--limit", type=int, default=None, help="Limit audio files for a quick smoke test")
+    parser.add_argument("--labels", action="append", default=[], help="Optional extracted label folder. Repeatable.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     source = Path(args.source)
-    rows, summary = build_metadata(source, args.limit)
+    rows, summary = build_metadata_for_source(source, args.limit, [Path(item) for item in args.labels])
     write_csv(rows, Path(args.output))
     summary["output"] = args.output
     print(json.dumps(summary, ensure_ascii=False, indent=2))
