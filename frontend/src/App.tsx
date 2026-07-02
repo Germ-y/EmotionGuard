@@ -18,6 +18,7 @@ type LogEntry = AnalyzeResponse & {
   text: string;
   time: string;
   timestamp: string;
+  loggedAtMs?: number;
 };
 
 type SpeechTiming = {
@@ -382,14 +383,39 @@ function transcriptsLookRelated(left: string, right: string, minLength = 8) {
   return false;
 }
 
+function collapseConsecutiveDuplicatePhrases(text: string) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 6) return text;
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let size = Math.floor(words.length / 2); size >= 3; size -= 1) {
+      for (let index = 0; index + size * 2 <= words.length; index += 1) {
+        const left = words.slice(index, index + size).map(normalizeSpeechWord).join("");
+        const right = words.slice(index + size, index + size * 2).map(normalizeSpeechWord).join("");
+        if (left && left === right) {
+          words.splice(index + size, size);
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+
+  return words.join(" ");
+}
+
 function sanitizeTranscriptText(value: string) {
-  return value
+  const cleaned = value
     .replace(/이전 상담 문맥\s*:\s*/g, "")
     .replace(/이어지는 발화를 한국어로 그대로 받아쓰기\.?/g, "")
     .replace(/문맥에 없는 내용을 새로 만들지 말 것\.?/g, "")
     .replace(/한국어 음성을 들리는 대로 그대로 받아쓰기\.?/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  return collapseConsecutiveDuplicatePhrases(cleaned);
 }
 
 function isLikelyLiveSttHallucination(text: string) {
@@ -606,6 +632,29 @@ function bestLogJudgement(logs: LogEntry[]) {
       if (pathDiff) return pathDiff;
       return logTextScore(right) - logTextScore(left);
     })[0];
+}
+
+function shouldMergeLogCandidate(candidate: LogEntry, entry: LogEntry) {
+  const compatibleEvent =
+    candidate.eventType === entry.eventType ||
+    candidate.eventType === "normal" ||
+    entry.eventType === "normal";
+  if (!compatibleEvent) return false;
+
+  if (transcriptsLookRelated(candidate.maskedText || candidate.text, entry.maskedText || entry.text, 5)) {
+    return true;
+  }
+
+  const candidateLoggedAt = candidate.loggedAtMs ?? 0;
+  const entryLoggedAt = entry.loggedAtMs ?? Date.now();
+  const sameShortWindow = candidateLoggedAt > 0 && Math.abs(entryLoggedAt - candidateLoggedAt) <= 3200;
+  const sameRiskTurn =
+    sameShortWindow &&
+    candidate.eventType !== "normal" &&
+    entry.eventType !== "normal" &&
+    candidate.detectionPath !== entry.detectionPath;
+
+  return sameRiskTurn;
 }
 
 function fallbackWordTimings(text: string): TranscriptionWord[] {
@@ -1510,16 +1559,10 @@ export default function App() {
       text: safeMaskedText,
       time: now(),
       timestamp: currentSessionTimestamp(),
+      loggedAtMs: Date.now(),
     };
 
-    const mergeTargets = logsRef.current.slice(0, 20).filter((candidate) => {
-      const compatibleEvent =
-        candidate.eventType === entry.eventType ||
-        candidate.eventType === "normal" ||
-        entry.eventType === "normal";
-      if (!compatibleEvent) return false;
-      return transcriptsLookRelated(candidate.maskedText || candidate.text, entry.maskedText || entry.text);
-    });
+    const mergeTargets = logsRef.current.slice(0, 20).filter((candidate) => shouldMergeLogCandidate(candidate, entry));
 
     if (mergeTargets.length > 0) {
       const targetIds = new Set(mergeTargets.map((item) => item.id));
@@ -1532,6 +1575,7 @@ export default function App() {
         id: anchor.id,
         time: anchor.time,
         timestamp: anchor.timestamp,
+        loggedAtMs: Math.min(...candidates.map((item) => item.loggedAtMs ?? entry.loggedAtMs ?? Date.now())),
         categories: uniqueValues(candidates.flatMap((item) => item.categories)),
         triggeredWords: uniqueValues(candidates.flatMap((item) => item.triggeredWords)),
         policyActions: uniqueValues(candidates.flatMap((item) => item.policyActions)),
@@ -2224,6 +2268,7 @@ export default function App() {
 
     const recognition = new Recognition();
     let recognitionRunning = false;
+    let processedFinalResultCount = 0;
     const runId = sessionRunIdRef.current;
 
     const startSafely = (delay = 0) => {
@@ -2238,6 +2283,7 @@ export default function App() {
         try {
           recognition.start();
           recognitionRunning = true;
+          processedFinalResultCount = 0;
           setStatus("음성 입력 대기 중");
         } catch {
           recognitionRunning = false;
@@ -2260,10 +2306,19 @@ export default function App() {
       setStatus("음성 입력 감지");
       let interim = "";
       let final = "";
+      let nextFinalResultCount = processedFinalResultCount;
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) final += transcript;
-        else interim += transcript;
+        if (event.results[i].isFinal) {
+          if (i < processedFinalResultCount) continue;
+          final += transcript;
+          nextFinalResultCount = Math.max(nextFinalResultCount, i + 1);
+        } else {
+          interim += transcript;
+        }
+      }
+      if (nextFinalResultCount !== processedFinalResultCount) {
+        processedFinalResultCount = nextFinalResultCount;
       }
       if (interim) {
         const cleanInterim = sanitizeTranscriptText(interim);
