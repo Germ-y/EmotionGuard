@@ -132,7 +132,7 @@ button:hover { transform: translateY(-1px); }
 
 .process-strip {
   --process-line-y: 18px;
-  --process-step-y: 11px;
+  --process-step-y: 19px;
   --process-blue: 79, 125, 255;
   --process-blue-core: 235, 244, 255;
   position: relative;
@@ -180,7 +180,18 @@ button:hover { transform: translateY(-1px); }
   transform: translate(-50%, -50%);
 }
 .process-step::after {
-  content: none;
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: var(--process-step-y);
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: transparent;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 .process-step.done {
   background: transparent;
@@ -192,7 +203,11 @@ button:hover { transform: translateY(-1px); }
   background: rgb(var(--process-blue));
 }
 .process-step.done::after {
-  content: none;
+  width: 28px;
+  height: 28px;
+  background: radial-gradient(circle at center, rgba(var(--process-blue), 0.34) 0 16%, rgba(var(--process-blue), 0.18) 42%, transparent 72%);
+  filter: blur(2px);
+  opacity: 1;
 }
 .process-step.active {
   background: transparent;
@@ -205,7 +220,12 @@ button:hover { transform: translateY(-1px); }
   background: rgb(var(--process-blue));
 }
 .process-step.active::after {
-  content: none;
+  width: 36px;
+  height: 36px;
+  background: radial-gradient(circle at center, rgba(var(--process-blue), 0.46) 0 15%, rgba(var(--process-blue), 0.24) 44%, transparent 74%);
+  filter: blur(2.5px);
+  opacity: 1;
+  animation: processPulse 1.9s ease-out infinite;
 }
 .process-step strong {
   display: block;
