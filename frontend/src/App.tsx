@@ -82,6 +82,12 @@ type PitchProtection = {
   offset: number;
 };
 
+type PitchSoftening = {
+  active: boolean;
+  offset: number;
+  mix: number;
+};
+
 type EscalationState = {
   abuse: number;
   sexual: number;
@@ -117,7 +123,6 @@ const CFG = {
   stageDedupeMs: 5000,
   raisedSustainMs: 250,
   raisedFlagWindow: 3000,
-  voiceChangeHoldMs: 1600,
   voiceLevelThreshold: 0.35,
   voicePeakThreshold: 0.002,
   voiceHoldMs: 1200,
@@ -288,14 +293,13 @@ function pitchProtectionForShout(
 ): PitchProtection {
   const levelTriggered = level >= threshold;
   const pitchTriggered = Boolean(pitchHz && pitchConfidence >= 0.28 && pitchHz >= pitchThreshold);
-  const modulationTriggered = levelTriggered || pitchTriggered;
+  const modulationTriggered = levelTriggered;
   if (!modulationTriggered) {
     return { active: false, levelTriggered, pitchTriggered, modulationTriggered, offset: 0 };
   }
 
   const levelOver = clamp((level - threshold) / Math.max(1, 100 - threshold), 0, 1);
-  const pitchOver = pitchHz ? clamp((pitchHz - pitchThreshold) / 120, 0, 1) : 0;
-  const triggerStrength = Math.max(0.35, levelOver, pitchOver);
+  const triggerStrength = Math.max(0.35, levelOver);
   const ratio = clamp(strength / 100, 0, 1);
   const baseDrop = 0.58;
   const spanDrop = 0.28;
@@ -318,6 +322,25 @@ function loudnessGainForLevel(level: number, threshold: number, strength: number
   const maxReduction = 0.18 + ratio * 0.38;
   const reduction = startReduction + (maxReduction - startReduction) * over;
   return clamp(1 - reduction, 1 - maxReduction, 1 - startReduction);
+}
+
+function pitchSofteningForDeviation(
+  pitchHz: number | undefined,
+  pitchConfidence: number,
+  baselineHz: number | null,
+  strength: number,
+): PitchSoftening {
+  if (!pitchHz || !baselineHz || pitchConfidence < 0.28) return { active: false, offset: 0, mix: 0 };
+
+  const upwardDeviation = pitchHz - baselineHz;
+  if (upwardDeviation < 55) return { active: false, offset: 0, mix: 0 };
+
+  const deviationRatio = clamp((upwardDeviation - 55) / 130, 0, 1);
+  const strengthRatio = clamp(strength / 100, 0, 1);
+  const offset = -(0.08 + deviationRatio * (0.12 + strengthRatio * 0.08));
+  const mix = 0.34 + deviationRatio * 0.28;
+
+  return { active: true, offset: clamp(offset, -0.28, -0.08), mix: clamp(mix, 0.34, 0.62) };
 }
 
 function createVoiceChangeCurve(amount = 220) {
@@ -1065,6 +1088,8 @@ export default function App() {
   const [error, setError] = useState("");
 
   const countersRef = useRef(initialCounts());
+  const levelRef = useRef(0);
+  const pitchBaselineRef = useRef<number | null>(null);
   const logsRef = useRef<LogEntry[]>([]);
   const reportLogsRef = useRef<LogEntry[]>([]);
   const contextBufferRef = useRef<string[]>([]);
@@ -1109,7 +1134,6 @@ export default function App() {
   const emotionPredictRef = useRef<{ inFlight: boolean; lastAt: number }>({ inFlight: false, lastAt: 0 });
   const voicemodRef = useRef<ReturnType<typeof createVoicemodClient> | null>(null);
   const voicemodStatusRef = useRef<VoicemodStatus>("disabled");
-  const voiceChangeUntilAtRef = useRef(0);
   const lastVoicemodActiveRef = useRef(false);
   const lastVoicemodAttemptAtRef = useRef(0);
   const lastRaisedAudioLogAtRef = useRef(0);
@@ -1261,16 +1285,16 @@ export default function App() {
     }
   }
 
-  function recordRaisedAudioEvent(features: AudioFeatures, trigger: "level" | "pitch") {
+  function recordRaisedAudioEvent(features: AudioFeatures) {
     const nowMs = Date.now();
     if (nowMs - lastRaisedAudioLogAtRef.current < CFG.raisedAudioLogDedupeMs) return;
     lastRaisedAudioLogAtRef.current = nowMs;
 
-    const text = trigger === "pitch" ? "피치 기준 초과 음성 구간" : "고성 음성 구간";
+    const text = "RMS 고성 음성 구간";
     const result: AnalyzeResponse = {
       abusive: false,
       severity: "mild",
-      categories: trigger === "pitch" ? ["pitch_spike", "raised_voice"] : ["raised_voice"],
+      categories: ["raised_voice"],
       emotion: "angry",
       sexual: false,
       source: "fallback",
@@ -1516,17 +1540,33 @@ export default function App() {
       current.analyser.getFloatTimeDomainData(buffer);
       current.analyser.getByteFrequencyData(frequencyData);
       const rms = Math.sqrt(buffer.reduce((sum, item) => sum + item * item, 0) / buffer.length);
-      const nextLevel = Math.min(100, rms * CFG.meterGain);
+      const rawLevel = Math.min(100, rms * CFG.meterGain);
+      const nextLevel = levelRef.current + (rawLevel - levelRef.current) * 0.35;
+      levelRef.current = nextLevel;
       const t = performance.now();
       const dt = t - lastTs;
       lastTs = t;
 
-      setLevel((prev) => prev + (nextLevel - prev) * 0.35);
+      setLevel(nextLevel);
       const peak = buffer.reduce((max, item) => Math.max(max, Math.abs(item)), 0);
       const pitch = current.ctx ? estimatePitch(buffer, current.ctx.sampleRate) : { pitchHz: undefined, confidence: 0 };
       const rawVoiceActivity = nextLevel >= CFG.voiceLevelThreshold || peak >= CFG.voicePeakThreshold;
       if (rawVoiceActivity) current.lastVoiceActivityTs = Date.now();
       const voiceActivity = rawVoiceActivity || Date.now() - (current.lastVoiceActivityTs ?? 0) < CFG.voiceHoldMs;
+      const pitchBaseline = pitchBaselineRef.current;
+      const pitchSoftening = pitchSofteningForDeviation(
+        pitch.pitchHz,
+        pitch.confidence,
+        pitchBaseline,
+        attenuationStrengthRef.current,
+      );
+      if (voiceActivity && pitch.pitchHz && pitch.confidence >= 0.28) {
+        const previousBaseline = pitchBaselineRef.current ?? pitch.pitchHz;
+        const followRate = pitchSoftening.active ? 0.015 : 0.08;
+        pitchBaselineRef.current = previousBaseline + (pitch.pitchHz - previousBaseline) * followRate;
+      } else if (!voiceActivity) {
+        pitchBaselineRef.current = null;
+      }
       if (autoThresholdEnabledRef.current) {
         const baseline = autoBaselineRef.current;
         if (!baseline.startedAtMs) baseline.startedAtMs = t;
@@ -1558,11 +1598,10 @@ export default function App() {
         pitchThresholdRef.current,
         attenuationStrengthRef.current,
       );
-      if (pitchProtection.modulationTriggered) {
-        voiceChangeUntilAtRef.current = Date.now() + CFG.voiceChangeHoldMs;
-      }
-      const voiceChangeActive = pitchProtection.modulationTriggered || Date.now() < voiceChangeUntilAtRef.current;
+      const voiceChangeActive = pitchProtection.modulationTriggered;
       const offset = pitchProtection.offset;
+      const pitchOnlySoftening = !voiceChangeActive && pitchSoftening.active;
+      const outputPitchOffset = voiceChangeActive ? offset : pitchSoftening.offset;
       const nextFeatures: AudioFeatures = {
         rms: rounded(rms, 4),
         rmsPercent: rounded(nextLevel, 1),
@@ -1584,9 +1623,9 @@ export default function App() {
         setVoiceModulating((prev) => (prev === voiceChangeActive ? prev : voiceChangeActive));
         if (!voiceActivity) setEmotionPrediction(null);
         const nextStatus = voiceChangeActive
-          ? pitchProtection.pitchTriggered
-            ? "피치 기준 초과 음성 변조"
-            : "고성 기준 초과 음성 변조"
+          ? "고성 기준 초과 음성 변조"
+          : pitchOnlySoftening
+            ? "피치 편차 자동 완화"
           : muted
             ? "욕설 단어 삐 처리"
             : voiceActivity
@@ -1598,10 +1637,10 @@ export default function App() {
         });
       }
 
-      current.jungle.setPitchOffset(offset);
+      current.jungle.setPitchOffset(outputPitchOffset);
       if (current.dryGain && current.processedGain && current.ctx) {
-        const dryMix = voiceChangeActive ? 0.03 : 1;
-        const processedMix = 0;
+        const processedMix = pitchOnlySoftening ? pitchSoftening.mix : 0;
+        const dryMix = voiceChangeActive ? 0.03 : 1 - processedMix;
         current.dryGain.gain.setTargetAtTime(dryMix, current.ctx.currentTime, 0.025);
         current.processedGain.gain.setTargetAtTime(processedMix, current.ctx.currentTime, 0.025);
       }
@@ -1623,11 +1662,9 @@ export default function App() {
           current.lastRaisedTs = Date.now();
           markDemoPhase("detect");
           markDemoPhase("mask");
-          setInterimText(pitchProtection.pitchTriggered
-            ? "피치 기준 초과 감지 - 출력 커서에서 음성을 변조합니다."
-            : "RMS 고성 감지 - 출력 커서에서 음성을 변조합니다.");
-          setStatus(pitchProtection.pitchTriggered ? "피치 기준 초과 음성 변조" : "고성 기준 초과 음성 변조");
-          recordRaisedAudioEvent(nextFeatures, pitchProtection.pitchTriggered ? "pitch" : "level");
+          setInterimText("RMS 고성 감지 - 출력 커서에서 음성을 변조합니다.");
+          setStatus("고성 기준 초과 음성 변조");
+          recordRaisedAudioEvent(nextFeatures);
         }
       } else if (nextLevel < activeThreshold * 0.8) {
         current.raisedSustainMs = 0;
@@ -2767,6 +2804,9 @@ export default function App() {
     lastBrowserDictationRef.current = null;
     setDemoStep("데모 버튼을 누르면 현재 상담 세션에 보호 이벤트가 기록됩니다.");
     setElapsed(0);
+    levelRef.current = 0;
+    pitchBaselineRef.current = null;
+    setLevel(0);
     setInterimText("상담을 듣고 있습니다.");
     setStatus("보호된 상담사 청취 출력");
     countersRef.current = initialCounts();
@@ -2789,7 +2829,6 @@ export default function App() {
     if (interimCheckRef.current.timer) window.clearTimeout(interimCheckRef.current.timer);
     setMonitorEnabled(true);
     setActive(true);
-    voiceChangeUntilAtRef.current = 0;
     commandVoicemodVoiceChange(false, true);
 
     try {
@@ -2810,10 +2849,11 @@ export default function App() {
       activeRef.current = false;
       sessionRunIdRef.current += 1;
       sessionStartedAtMsRef.current = null;
-      voiceChangeUntilAtRef.current = 0;
       commandVoicemodVoiceChange(false, true);
       setActive(false);
       setVoiceModulating(false);
+      levelRef.current = 0;
+      pitchBaselineRef.current = null;
       setError("마이크 권한이 필요합니다.");
     }
   }
@@ -2825,7 +2865,6 @@ export default function App() {
     elapsedRef.current = finalElapsed;
     const state = audioRef.current;
     liveChunkRef.current.enabled = false;
-    voiceChangeUntilAtRef.current = 0;
     commandVoicemodVoiceChange(false, true);
     if (liveChunkRef.current.timer) window.clearTimeout(liveChunkRef.current.timer);
     if (state.mediaRecorder?.state === "recording") state.mediaRecorder.stop();
@@ -2852,6 +2891,8 @@ export default function App() {
     setLiveTranscript("");
     setEmotionPrediction(null);
     setVoiceModulating(false);
+    levelRef.current = 0;
+    pitchBaselineRef.current = null;
     setLevel(0);
     setMuted(false);
     setStatus("대기 중");
@@ -2964,7 +3005,7 @@ export default function App() {
               <b>{attenuationStrength}%</b>
             </label>
             <label className="threshold-control pitch-control">
-              <span>피치 기준</span>
+              <span>피치 참고</span>
               <input type="range" min={160} max={340} step={5} value={pitchThreshold} onChange={(event) => setPitchThreshold(Number(event.target.value))} />
               <b>{pitchThreshold}Hz</b>
             </label>
