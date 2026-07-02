@@ -251,8 +251,8 @@ def generate_highlight_visual(data: dict[str, Any], output_path: Path) -> None:
     text(draw, (70, 518), "정상 방어 및 주요 문맥 판단에서 높은 통과율을 보인 항목", 21, MUTED)
 
     preferred = [
-        ("정상 발화 1", "kold_none"),
-        ("정상 발화 2", "korpora_none"),
+        ("KOLD 정상 발화", "kold_none"),
+        ("Korpora 정상 발화", "korpora_none"),
         ("편향/차별 혐오", "korpora_hate_bias"),
         ("성별 편향 혐오", "korpora_hate_gender_bias"),
         ("대상 특정 공격", "kold_offensive_targeted"),
