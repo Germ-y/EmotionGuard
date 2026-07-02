@@ -13,7 +13,7 @@ const VOICEMOD_PORTS = [
 ];
 
 const VOICEMOD_KEY_STORAGE = "emotionguard.voicemod.clientKey";
-const DEFAULT_VOICE_ID = "robot";
+const DEFAULT_VOICE_ID = "narrator";
 const NOFX_VOICE_ID = "nofx";
 const NOFX_INTERNAL_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -212,7 +212,7 @@ export class VoicemodClient {
 
     const strongCandidate = this.voices.find((voice) => {
       const label = `${voice.id ?? ""} ${voice.friendlyName ?? ""}`.toLowerCase();
-      return voice.enabled !== false && /robot|android|droid|digital|blocks|ai|tech|deep|cave/.test(label);
+      return voice.enabled !== false && /narrator|robot|android|droid|digital|blocks|ai|tech|deep|cave/.test(label);
     });
     if (strongCandidate?.id) return strongCandidate.id;
 
