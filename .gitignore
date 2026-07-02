@@ -35,3 +35,5 @@ data/skt/*.tar
 
 .tools/
 backend/app/data/dictionaries.aihub.json
+qa/external/
+qa/results/

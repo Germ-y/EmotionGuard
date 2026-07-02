@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "seed": 20260702,
+  "rows": 5000,
+  "sourceRepositories": [
+    {
+      "name": "kocohub/korean-hate-speech",
+      "files": [
+        "labeled/train.tsv",
+        "labeled/dev.tsv"
+      ],
+      "localCache": "C:\\Users\\yungg\\Downloads\\EmotionGuard\\qa\\external"
+    },
+    {
+      "name": "boychaboy/KOLD",
+      "files": [
+        "data/kold_v1.json"
+      ],
+      "localCache": "C:\\Users\\yungg\\Downloads\\EmotionGuard\\qa\\external"
+    }
+  ],
+  "targetCounts": {
+    "korpora_hate": 900,
+    "korpora_offensive": 700,
+    "korpora_none": 900,
+    "kold_offensive": 1600,
+    "kold_none": 900
+  },
+  "sourceDatasetCounts": {
+    "kold": 2500,
+    "korpora_korean_hate_speech": 2500
+  },
+  "categoryCounts": {
+    "kold_none": 900,
+    "kold_offensive": 604,
+    "kold_offensive_targeted": 996,
+    "korpora_hate": 252,
+    "korpora_hate_bias": 300,
+    "korpora_hate_gender_bias": 348,
+    "korpora_none": 900,
+    "korpora_offensive": 407,
+    "korpora_offensive_bias": 203,
+    "korpora_offensive_gender_bias": 90
+  },
+  "eventTypeCounts": {
+    "abuse": 3200,
+    "normal": 1800
+  },
+  "maskableRows": 312,
+  "contextRequiredRows": 2887,
+  "notes": [
+    "Rows are sampled from external Korpora/kocohub Korean HateSpeech and KOLD datasets.",
+    "External offensive/hate labels are mapped to EmotionGuard abuse events for QA.",
+    "Normal rows are used to measure false positives.",
+    "KOLD OFF_span is preserved as expected.offensiveSpanHint when available.",
+    "Local raw caches under qa/external are reproducible and should not be committed."
+  ]
+}
